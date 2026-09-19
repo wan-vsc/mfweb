@@ -1,5 +1,7 @@
 #include <mfweb/test/test.hpp>
 
+#include <cstdio>
+
 namespace mfweb::test {
 
 registry& registry::instance() {
@@ -21,6 +23,10 @@ void registry::fail(std::string_view file, int line, std::string_view expr, std:
 }
 
 int run_all(const char* filter) {
+    // 关闭 stdout 缓冲：测试进程若崩溃，缓冲里未刷出的输出会连同崩溃点一起丢失，
+    // 定位就变成了"猜"。实测过一次堆损坏（0xC0000374），正是靠这一行才把崩溃点钉住。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     auto& reg = registry::instance();
     int passed = 0;
     int failed = 0;

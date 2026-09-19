@@ -13,6 +13,7 @@
 
 namespace mfweb::bench {
 int run_coro(int argc, char** argv);
+int run_timer(int argc, char** argv);
 }  // namespace mfweb::bench
 
 namespace {
@@ -28,6 +29,10 @@ void print_usage() {
     std::printf("      run    : 完整跑完 n 个协程（测协程生命周期吞吐）\n");
     std::printf("      live   : 同时驻留 n 个协程（测每协程内存开销）\n");
     std::printf("      nest   : 单次 n 层嵌套 co_await（测对称转移的栈安全）\n");
+    std::printf("  timer <mode> [n]               定时器基准\n");
+    std::printf("      mode = insert | fire | cancel-handle | cancel-index\n");
+    std::printf("      cancel-handle : Awaiter 缓存节点指针，取消无需查找（生产路径）\n");
+    std::printf("      cancel-index  : 朴素做法，额外维护 id→节点 哈希索引，先查表再删除\n");
 }
 
 }  // namespace
@@ -44,6 +49,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (command == "coro") { return mfweb::bench::run_coro(argc - 1, argv + 1); }
+    if (command == "timer") { return mfweb::bench::run_timer(argc - 1, argv + 1); }
 
     std::printf("未知基准: %.*s\n\n", static_cast<int>(command.size()), command.data());
     print_usage();

@@ -2,6 +2,7 @@
 add_executable(mfbench
     mfbench.cpp
     coro_bench.cpp
+    timer_bench.cpp
 )
 
 target_link_libraries(mfbench PRIVATE mfweb::mfweb)
