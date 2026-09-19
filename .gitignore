@@ -1,0 +1,22 @@
+# 构建产物（本仓库位于 <交付文件夹>\01_mfweb，构建目录在其上层 _work 中）
+_work/
+build/
+out/
+.vs/
+
+# MSVC 产物
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exe
+*.lib
+*.exp
+*.res
+*.tlog
+*.log
+
+# 编辑器
+*.user
+.vscode/
+.idea/
