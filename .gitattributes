@@ -1,0 +1,10 @@
+# 统一换行符：仓库内存 LF，检出到工作区时由 git 决定
+* text=auto eol=lf
+
+# 二进制文件不参与换行符转换
+*.png binary
+*.jpg binary
+*.pdf binary
+*.lib binary
+*.exe binary
+*.pdb binary
