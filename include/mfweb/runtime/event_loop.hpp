@@ -47,6 +47,12 @@ public:
 
     [[nodiscard]] bool stopped() const noexcept;
 
+    // 是否还有待执行的投递任务（线程安全）
+    [[nodiscard]] bool has_pending_tasks() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return !tasks_.empty();
+    }
+
     // 仅循环线程
     [[nodiscard]] timer_queue& timers() noexcept { return timers_; }
     [[nodiscard]] const timer_queue& timers() const noexcept { return timers_; }
