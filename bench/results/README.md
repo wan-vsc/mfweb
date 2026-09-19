@@ -1,0 +1,79 @@
+# 基准原始输出
+
+本目录保存 `mfbench` 的**原始 CSV 输出**，是 `03_性能实测报告.md` 的数据来源。
+每份结果都必须能由下面这条命令复现。
+
+## 测试环境
+
+| 项 | 值 |
+| --- | --- |
+| CPU | Intel(R) Core(TM) i7-14650HX |
+| 逻辑核数 | 24 |
+| 内存 | 提交上限 31,520 MB（物理约 32 GB） |
+| 操作系统 | Microsoft Windows NT 10.0.26200.0 |
+| 编译器 | MSVC 19.51.36243（工具集 14.51.36231） |
+| Windows SDK | 10.0.26100 |
+| 构建类型 | Release（`/O2`，`/W4 /permissive-`，零警告） |
+| 构建命令 | `_src\build.ps1 -Config Release` |
+| 采集日期 | 2026-09-19 |
+
+## 复现命令
+
+```powershell
+$exe = "_work\build\bench\mfbench.exe"
+& $exe coro create 1000000 pool
+& $exe coro create 1000000 nopool
+& $exe coro run    1000000 pool
+& $exe coro run    1000000 nopool
+& $exe coro live   1000000 pool
+& $exe coro nest   1000000 pool
+```
+
+CSV 列含义：
+
+| 列 | 含义 |
+| --- | --- |
+| `seconds` | 该基准的墙钟耗时 |
+| `ops_per_sec` | n / seconds |
+| `ws_before_kb` / `ws_after_kb` | 基准前后进程工作集（KB） |
+| `heap_allocs` | 帧分配器直接走全局堆的次数 |
+| `pooled_hits` | 命中线程局部 freelist 的次数 |
+| `pool_releases` | 归还到 freelist 的次数 |
+| `cached_blocks` | 结束时缓存的空闲块数 |
+
+## 结果汇总（n = 1,000,000）
+
+| 基准 | 帧池 | 耗时 (s) | 吞吐 (ops/s) | 备注 |
+| --- | --- | --- | --- | --- |
+| create+destroy | on | 0.065170 | 15,344,389 | 句柄逃逸到 vector，帧真实分配 |
+| create+destroy | off | 0.069507 | 14,386,999 | 全部走全局堆 |
+| run to completion | on | 0.046654 | **21,434,435** | 1 次堆分配 + 999,999 次命中池 |
+| run to completion | off | 0.069845 | 14,317,520 | 1,000,000 次堆分配 |
+| live set（同时驻留 100 万协程） | on | 0.047718 | 20,956,321 | 工作集 +86,372 KB |
+| deep nesting（100 万层 co_await） | on | 0.102569 | 9,749,544 | 结果正确，未栈溢出 |
+
+**帧池收益**：`run` 场景 **+49.7%**（21.43M vs 14.32M ops/s）；`create` 场景 +6.7%。
+
+**每协程内存开销**：86,372 KB ÷ 1,000,000 ≈ **88.4 字节/协程**（含 `task` 句柄 8 字节）。
+这是"单进程百万并发协程"最关键的指标 —— 100 万协程常驻约 84 MB。
+
+## 两个必须记录在案的坑（否则数据是假的）
+
+### 1. MSVC 的 HALO 会让"创建协程"变成空循环
+
+第一版 `coro create` 把 task 写成循环内的局部变量，结果处理 100 万次只用 0.0048 秒、
+`heap_allocs == 0` —— 因为 MSVC 的 **HALO（Heap Allocation eLision Optimization）**
+在协程句柄不逃逸时把帧直接放在调用者栈上，根本不经过 `operator new`。
+现在基准把句柄放进 `std::vector` 强制逃逸，`heap_allocs` 才等于 1,000,000。
+
+**结论**：任何声称"测协程帧分配"的基准，都必须先证明句柄真的逃逸了。
+
+### 2. 帧池上限限制了批量化场景的收益
+
+`create` 场景只提升 6.7%，原因是每档缓存上限 `kMaxCachedPerClass = 128`：
+批量创建时前 128 次释放进池，其余 999,872 次仍然直接 `::operator delete`。
+而 `run` 场景是"分配—释放"交替进行，同一个块被反复复用，池的收益才充分体现。
+
+**待决问题（列入 P9 调优）**：默认上限 128 是否偏小？上限调大能提升批量场景，
+但每线程常驻内存会增加（16 档 × 上限 × 平均 512 B）。这个权衡需要实测数据支撑，
+而不是拍脑袋定值。

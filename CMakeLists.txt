@@ -29,10 +29,10 @@ option(MFWEB_BUILD_BENCH "构建基准程序" ON)
 option(MFWEB_BUILD_EXAMPLES "构建示例程序" ON)
 
 # ---------------------------------------------------------------- 核心库
-add_library(mfweb STATIC
-    src/version.cpp
-    src/test/test.cpp
-)
+# 源文件用 GLOB_RECURSE + CONFIGURE_DEPENDS：新增 src/**.cpp 时自动纳入，无需改动本文件
+file(GLOB_RECURSE MFWEB_LIB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+add_library(mfweb STATIC ${MFWEB_LIB_SOURCES})
 add_library(mfweb::mfweb ALIAS mfweb)
 
 target_include_directories(mfweb
