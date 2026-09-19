@@ -85,7 +85,9 @@ public:
         return true;
     }
 
-    [[nodiscard]] io::io_status await_resume() noexcept {
+    // 注意不能加 [[nodiscard]]：co_await 且不接返回值时（如"尽力读"场景），
+    // MSVC 会把这种用法误判成"丢弃 nodiscard 返回值"（C4834）。
+    io::io_status await_resume() noexcept {
         pending_ = false;
         return op_.status;
     }
@@ -163,24 +165,26 @@ private:
     int addr_len_;
 };
 
-[[nodiscard]] inline read_awaiter async_read(runtime::io_context& ctx, io::native_socket s,
-                                             void* data, std::size_t len) noexcept {
+// 工厂函数。注意**不能**加 [[nodiscard]]：MSVC 会把 `co_await async_xxx(...)`
+// 里对返回值的消费误判为"丢弃返回值"（C4834）。这些 Awaiter 只有 `co_await` 一种用法，
+// 且创建时并不提交任何操作（提交发生在 await_suspend），加 nodiscard 既无用又报错。
+inline read_awaiter async_read(runtime::io_context& ctx, io::native_socket s,
+                               void* data, std::size_t len) noexcept {
     return read_awaiter{ctx, s, data, len};
 }
 
-[[nodiscard]] inline write_awaiter async_write(runtime::io_context& ctx, io::native_socket s,
-                                               const void* data, std::size_t len) noexcept {
+inline write_awaiter async_write(runtime::io_context& ctx, io::native_socket s,
+                                 const void* data, std::size_t len) noexcept {
     return write_awaiter{ctx, s, data, len};
 }
 
-[[nodiscard]] inline accept_awaiter async_accept(runtime::io_context& ctx,
-                                                 io::native_socket listener,
-                                                 io::native_socket accepted) noexcept {
+inline accept_awaiter async_accept(runtime::io_context& ctx, io::native_socket listener,
+                                   io::native_socket accepted) noexcept {
     return accept_awaiter{ctx, listener, accepted};
 }
 
-[[nodiscard]] inline connect_awaiter async_connect(runtime::io_context& ctx, io::native_socket s,
-                                                   const sockaddr* addr, int addr_len) noexcept {
+inline connect_awaiter async_connect(runtime::io_context& ctx, io::native_socket s,
+                                     const sockaddr* addr, int addr_len) noexcept {
     return connect_awaiter{ctx, s, addr, addr_len};
 }
 

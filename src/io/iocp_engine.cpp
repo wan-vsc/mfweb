@@ -182,6 +182,12 @@ bool iocp_engine::cancel(io_operation& op) noexcept {
     return ::CancelIoEx(reinterpret_cast<HANDLE>(op.socket), &op.platform) != 0;
 }
 
+bool iocp_engine::cancel_socket(native_socket s) noexcept {
+    if (s == k_invalid_socket) { return false; }
+    // lpOverlapped 传 nullptr 表示取消该句柄上所有挂起的 I/O
+    return ::CancelIoEx(reinterpret_cast<HANDLE>(s), nullptr) != 0;
+}
+
 void iocp_engine::finish(io_operation* op) noexcept {
     // accept 成功后必须把监听套接字上下文拷到新套接字上，
     // 否则 getsockname/getpeername 与后续 setsockopt 都不生效。

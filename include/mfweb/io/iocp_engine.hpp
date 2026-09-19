@@ -45,6 +45,11 @@ public:
     // 调用方必须仍然等待完成，不能假定操作已经结束。
     bool cancel(io_operation& op) noexcept;
 
+    // 取消该套接字上所有挂起的操作。
+    // 用途：连接关闭时把挂起的读唤醒 —— 这是 ADR-010 要求的"先取消、再让协程自己醒来结束"，
+    // 而不是直接销毁持有操作对象的协程帧。
+    bool cancel_socket(native_socket s) noexcept;
+
     // 收割完成事件并调用各自的 on_complete。返回本次处理的完成包个数。
     // block = true 时最多等待 timeout_ms 毫秒。
     std::size_t harvest(bool block, std::size_t max_events, unsigned timeout_ms);

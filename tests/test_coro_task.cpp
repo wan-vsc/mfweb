@@ -19,7 +19,14 @@ mfweb::coro::task<void> nothing() { co_return; }
 
 mfweb::coro::task<std::string> greet(std::string who) { co_return "hello " + who; }
 
-mfweb::coro::task<int> throws_runtime() { throw std::runtime_error("boom"); }
+// volatile 让编译器无法在编译期判定"必然抛异常"。
+// 否则 /O2 + ASAN 下会把 MFW_CHECK_THROWS 的"未抛异常"分支判成不可达代码（C4702）。
+volatile bool g_always_throw = true;
+
+mfweb::coro::task<int> throws_runtime() {
+    if (g_always_throw) { throw std::runtime_error("boom"); }
+    co_return 0;
+}
 
 mfweb::coro::task<int> propagates_from_child() { co_return co_await throws_runtime(); }
 
