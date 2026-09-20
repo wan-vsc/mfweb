@@ -13,6 +13,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <mutex>
@@ -41,6 +42,7 @@ struct ring_state {
     unsigned* sq_tail = nullptr;
     unsigned* sq_mask = nullptr;
     unsigned* sq_entries = nullptr;
+    unsigned* sq_flags = nullptr;   // 内核写：IORING_SQ_CQ_OVERFLOW 等
     unsigned* sq_array = nullptr;
 
     unsigned* cq_head = nullptr;
@@ -50,6 +52,13 @@ struct ring_state {
 
     int event_fd = -1;
     unsigned pending = 0;             // 已填进 SQ 但还没 enter 的条目数
+    unsigned long overflow_seen = 0;  // CQ 溢出被观察到的次数（诊断用）
+    bool need_recovery = false;       // 需要做一次溢出恢复
+
+    // 在途操作登记表：诊断用。已经提交给内核、但还没收到完成事件的操作。
+    // 停滞时打印它们，就能知道**到底是哪个操作的完成事件丢了**。
+    std::vector<io_operation*> in_flight;
+    unsigned stall_ticks = 0;         // 连续"有在途操作却收不到完成事件"的次数
 
     // 这把锁同时保护三件事：SQ 获取/提交、CQE 读取与 cq_head 推进、SQ 满判断。
     // 收割缓冲**不放这里**：它必须每次调用私有（见 harvest 里的注释）。
@@ -119,8 +128,18 @@ uring_engine::uring_engine() noexcept {
     }
     auto& r = impl_->r;
 
+    // ---- 环大小 ----
+    // SQ 条目数只是"一次 enter 最多提交多少"，而 **CQ 才是会丢事件的地方**：
+    // CQ 满了以后内核会置 IORING_SQ_CQ_OVERFLOW 并**停止投递完成事件**，
+    // 于是某个协程永远等不到唤醒 —— 表现为连接卡死、服务端 CPU 为 0。
+    // 实测触发场景：一次 10 MiB 传输要发 160 个 64 KiB 写，
+    // 每次阻塞收割还会提交 TIMEOUT + ASYNC_CANCEL，短时间内能产生 600+ 个完成事件，
+    // 正好压爆默认的 2*SQ = 512 项 CQ。
+    // 这里显式把 CQ 放大到 4096，并留出足够余量。
     ::io_uring_params p{};
-    const long fd = sys_setup(256, &p);
+    p.flags |= IORING_SETUP_CQSIZE;
+    p.cq_entries = 4096;
+    const long fd = sys_setup(1024, &p);
     if (fd < 0) {
         last_error_.store(errno, std::memory_order_relaxed);
         return;
@@ -149,6 +168,7 @@ uring_engine::uring_engine() noexcept {
     r.sq_tail = reinterpret_cast<unsigned*>(sq + p.sq_off.tail);
     r.sq_mask = reinterpret_cast<unsigned*>(sq + p.sq_off.ring_mask);
     r.sq_entries = reinterpret_cast<unsigned*>(sq + p.sq_off.ring_entries);
+    r.sq_flags = reinterpret_cast<unsigned*>(sq + p.sq_off.flags);
     r.sq_array = reinterpret_cast<unsigned*>(sq + p.sq_off.array);
     r.cq_head = reinterpret_cast<unsigned*>(cq + p.cq_off.head);
     r.cq_tail = reinterpret_cast<unsigned*>(cq + p.cq_off.tail);
@@ -171,6 +191,10 @@ uring_engine::~uring_engine() {
         return;
     }
     auto& r = impl_->r;
+    if (r.overflow_seen != 0) {
+        std::fprintf(stderr, "[mfweb/uring] 警告：CQ 环溢出 %lu 次（已完成恢复）\n",
+                     r.overflow_seen);
+    }
     if (r.sqes != nullptr && r.sqes != MAP_FAILED) { ::munmap(r.sqes, r.sqes_sz); }
     if (r.cq_ring != nullptr && r.cq_ring != MAP_FAILED) { ::munmap(r.cq_ring, r.cq_ring_sz); }
     if (r.sq_ring != nullptr && r.sq_ring != MAP_FAILED) { ::munmap(r.sq_ring, r.sq_ring_sz); }
@@ -204,6 +228,7 @@ bool uring_engine::post_accept(io_operation& op, native_socket listener,
     }
     fill_common(sqe, IORING_OP_ACCEPT, listener, op);
     op.kind = op_kind::accept;
+    r.in_flight.push_back(&op);
     // ACCEPT 不接受"预创建套接字"（这点与 AcceptEx 不同），
     // 完成时我们会 dup2 到调用方给的 fd 上，接口对上层保持不变。
     op.socket = listener;
@@ -223,6 +248,7 @@ bool uring_engine::post_connect(io_operation& op, native_socket s, const sockadd
     }
     fill_common(sqe, IORING_OP_CONNECT, s, op);
     op.kind = op_kind::connect;
+    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(addr);
     sqe->off = static_cast<std::uint64_t>(addr_len);
     op.socket = s;
@@ -241,6 +267,7 @@ bool uring_engine::post_read(io_operation& op, native_socket s, void* data,
     }
     fill_common(sqe, IORING_OP_READ, s, op);
     op.kind = op_kind::read;
+    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(data);
     sqe->len = static_cast<unsigned>(len);
     op.socket = s;
@@ -259,6 +286,7 @@ bool uring_engine::post_write(io_operation& op, native_socket s, const void* dat
     }
     fill_common(sqe, IORING_OP_WRITE, s, op);
     op.kind = op_kind::write;
+    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(data);
     sqe->len = static_cast<unsigned>(len);
     op.socket = s;
@@ -310,7 +338,12 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
         out.clear();
         unsigned head = __atomic_load_n(r.cq_head, __ATOMIC_RELAXED);
         const unsigned tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
-        while (head != tail && out.size() < max_events) {
+        // **必须抽干整个 CQ**，不能按 max_events 截断：
+        // 留下的条目会继续占着 CQ 环，叠加下面的 TIMEOUT/CANCEL 流量就会溢出；
+        // 一旦溢出内核就停止投递完成事件，事件永久丢失、协程永久挂起。
+        // max_events 只作为"单次回调上限"的软约束，这里不再用它截断收割。
+        (void)max_events;
+        while (head != tail) {
             const ::io_uring_cqe* cqe = &r.cqes[head & *r.cq_mask];
             const std::uint64_t tag = cqe->user_data;
             const int res = cqe->res;
@@ -335,9 +368,18 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
                     }
                 }
             }
+            for (std::size_t k = 0; k < r.in_flight.size(); ++k) {
+                if (r.in_flight[k] == op) { r.in_flight.erase(r.in_flight.begin() + static_cast<long>(k)); break; }
+            }
             out.push_back(op);
         }
         __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
+        // 溢出恢复：内核把丢掉的完成事件存放在溢出链表里，
+        // 抽干 CQ 之后再 enter 一次(GETEVENTS) 就会把它们补投出来。
+        if ((__atomic_load_n(r.sq_flags, __ATOMIC_RELAXED) & IORING_SQ_CQ_OVERFLOW) != 0) {
+            ++r.overflow_seen;
+            r.need_recovery = true;
+        }
         return out.size();
     };
 
@@ -345,13 +387,47 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
     // 那些路径要拿同一把锁，持锁回调会直接死锁。
     std::vector<io_operation*> batch;
     std::size_t got = drain(batch);
+
+    // 溢出恢复：CQ 曾经满过 → 内核停止投递并把这些完成事件挂到溢出链表。
+    // 抽干 CQ 之后再 enter 一次(GETEVENTS)，内核就会把它们补投出来。
+    // 不做这一步，那些事件会**永久丢失**，对应的协程永远等不到唤醒。
+    if (r.need_recovery) {
+        r.need_recovery = false;
+        sys_enter(r.ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        std::vector<io_operation*> extra;
+        if (drain(extra) > 0) {
+            batch.insert(batch.end(), extra.begin(), extra.end());
+            got = batch.size();
+        }
+    }
+
     if (got > 0 || !block) {
+        r.stall_ticks = 0;
         for (io_operation* op : batch) {
             if (op->on_complete != nullptr) {
                 op->on_complete(op);
             }
         }
         return got;
+    }
+
+    // ---- 停滞检测 ----
+    // 明明有在途操作、却连续很多次唤醒都收不到任何完成事件 —— 那就是丢了事件。
+    if (!r.in_flight.empty()) {
+        if (++r.stall_ticks == 300) {
+            std::fprintf(stderr,
+                         "[mfweb/uring] 停滞：在途 %zu 个操作但连续 300 次无完成事件 "
+                         "(cq_head=%u cq_tail=%u sq_flags=0x%x overflow=%lu)\n",
+                         r.in_flight.size(), *r.cq_head, *r.cq_tail,
+                         *r.sq_flags, r.overflow_seen);
+            for (io_operation* op : r.in_flight) {
+                std::fprintf(stderr, "    kind=%d socket=%d status=(%d,%zu)\n",
+                             static_cast<int>(op->kind), op->socket, op->status.error,
+                             op->status.bytes);
+            }
+        }
+    } else {
+        r.stall_ticks = 0;
     }
 
     // ---- 阻塞等待：用一个 TIMEOUT 操作给 enter(GETEVENTS) 设上限 ----

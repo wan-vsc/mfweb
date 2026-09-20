@@ -51,6 +51,26 @@ constexpr std::size_t kChunk = 64 * 1024;
     return false;
 }
 
+// 把 [data, data+len) **完整**写出去。
+//
+// 为什么必须循环：proactor 的契约是"这次操作完成了"，**不是**"请求的字节都写完了"。
+// 一次 async_write 完全可能只写出一部分（对端接收窗口小、发送缓冲区满都会这样）。
+//
+// 早先的代码把"从文件读到的字节数"直接当作"已写出的字节数"往下走，
+// 于是**静默丢掉尾部**：
+//   * Windows/IOCP + loopback 上 64 KiB 基本一次写完，这个缺陷从不暴露；
+//   * Linux/io_uring 上稳定复现 —— 10 MiB 传输每次少 1~5 KB（零头不固定），
+//     客户端表现为"响应永远收不全、连接挂死"，而服务端 CPU 为 0、CQ 里也没有待处理事件。
+coro::task<bool> write_all(runtime::io_context& ctx, io::native_socket s, const char* data,
+                           std::size_t len) {
+    std::size_t off = 0;
+    while (off < len) {
+        const auto r = co_await coro::async_write(ctx, s, data + off, len - off);
+        if (!r.ok() || r.bytes == 0) { co_return false; }
+        off += r.bytes;
+    }
+    co_return true;
+}
 }  // namespace
 
 bool server::listen(std::uint16_t port, const char* bind_ip) {
@@ -308,8 +328,7 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
         head += "Connection: keep-alive\r\n\r\n";
     }
 
-    const auto wh = co_await coro::async_write(*ctx_, s, head.data(), head.size());
-    if (!wh.ok()) { co_return false; }
+    if (!co_await write_all(*ctx_, s, head.data(), head.size())) { co_return false; }
     if (head_only) { co_return true; }
 
     if (resp.stream_file) {
@@ -325,21 +344,17 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
             in.read(chunk.data(), static_cast<std::streamsize>(want));
             const std::size_t got = static_cast<std::size_t>(in.gcount());
             if (got == 0) { break; }
-            const auto wr = co_await coro::async_write(*ctx_, s, chunk.data(), got);
-            if (!wr.ok()) { co_return false; }
+            if (!co_await write_all(*ctx_, s, chunk.data(), got)) { co_return false; }
             remaining -= got;
         }
         co_return true;
     }
 
     if (!resp.body_view.empty()) {  // 非拥有 body：零拷贝发送
-        const auto wb =
-            co_await coro::async_write(*ctx_, s, resp.body_view.data(), resp.body_view.size());
-        co_return wb.ok();
+        co_return co_await write_all(*ctx_, s, resp.body_view.data(), resp.body_view.size());
     }
     if (!resp.body.empty()) {
-        const auto wb = co_await coro::async_write(*ctx_, s, resp.body.data(), resp.body.size());
-        co_return wb.ok();
+        co_return co_await write_all(*ctx_, s, resp.body.data(), resp.body.size());
     }
     co_return true;
 }
