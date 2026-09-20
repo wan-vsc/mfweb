@@ -1,58 +1,56 @@
-mfweb_timeout_repro.exe : =================================================================
-At line:1 char:530
-+ ... t'; $env:ASAN_OPTIONS = 'halt_on_error=1'; & $exe 1> $o 2> $e; 'exit= ...
-+                                                ~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (===============...===============:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
+# 说明：本文件是 ASAN 的原始输出，仅做了两处与诊断内容无关的整理：
+#   1. 去掉了开头 PowerShell 包装脚本的报错噪音（那不是 ASAN 内容）；
+#   2. 把构建机上的绝对路径替换为 <build>，便于在别处对照自己的构建产物。
+# ASAN 诊断正文（地址、调用栈、对象大小、释放点）未作任何修改。
+
 ==14636==ERROR: AddressSanitizer: heap-use-after-free on address 0x1290967a1bf0 at pc 0x7ff7a07c55ab bp 0x00f38970f500 
 sp 0x00f38970f500
 WRITE of size 4 at 0x1290967a1bf0 thread T0
-    #0 0x7ff7a07c55aa  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x155aa
+    #0 0x7ff7a07c55aa  (<build>\tests\mfweb_timeout_repro.exe+0x155aa
 )
-    #1 0x7ff7a07c78c6  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x178c6
+    #1 0x7ff7a07c78c6  (<build>\tests\mfweb_timeout_repro.exe+0x178c6
 )
-    #2 0x7ff7a07c34a0  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x134a0
+    #2 0x7ff7a07c34a0  (<build>\tests\mfweb_timeout_repro.exe+0x134a0
 )
-    #3 0x7ff7a07cdc3e  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1dc3e
+    #3 0x7ff7a07cdc3e  (<build>\tests\mfweb_timeout_repro.exe+0x1dc3e
 )
     #4 0x7ffb3dace956  (C:\WINDOWS\System32\KERNEL32.DLL+0x18002e956)
     #5 0x7ffb3f12ad6b  (C:\WINDOWS\SYSTEM32\ntdll.dll+0x1800aad6b)
 
 0x1290967a1bf0 is located 112 bytes inside of 560-byte region [0x1290967a1b80,0x1290967a1db0)
 freed by thread T0 here:
-    #0 0x7ff7a07ccbd3  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1cbd3
+    #0 0x7ff7a07ccbd3  (<build>\tests\mfweb_timeout_repro.exe+0x1cbd3
 )
-    #1 0x7ff7a07c17aa  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x117aa
+    #1 0x7ff7a07c17aa  (<build>\tests\mfweb_timeout_repro.exe+0x117aa
 )
-    #2 0x7ff7a07ba5bf  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0xa5bf)
-    #3 0x7ff7a07bb93c  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0xb93c)
-    #4 0x7ff7a07cb946  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1b946
+    #2 0x7ff7a07ba5bf  (<build>\tests\mfweb_timeout_repro.exe+0xa5bf)
+    #3 0x7ff7a07bb93c  (<build>\tests\mfweb_timeout_repro.exe+0xb93c)
+    #4 0x7ff7a07cb946  (<build>\tests\mfweb_timeout_repro.exe+0x1b946
 )
-    #5 0x7ff7a07cc196  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1c196
+    #5 0x7ff7a07cc196  (<build>\tests\mfweb_timeout_repro.exe+0x1c196
 )
-    #6 0x7ff7a07c78d1  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x178d1
+    #6 0x7ff7a07c78d1  (<build>\tests\mfweb_timeout_repro.exe+0x178d1
 )
-    #7 0x7ff7a07c34a0  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x134a0
+    #7 0x7ff7a07c34a0  (<build>\tests\mfweb_timeout_repro.exe+0x134a0
 )
-    #8 0x7ff7a07cdc3e  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1dc3e
+    #8 0x7ff7a07cdc3e  (<build>\tests\mfweb_timeout_repro.exe+0x1dc3e
 )
     #9 0x7ffb3dace956  (C:\WINDOWS\System32\KERNEL32.DLL+0x18002e956)
     #10 0x7ffb3f12ad6b  (C:\WINDOWS\SYSTEM32\ntdll.dll+0x1800aad6b)
 
 previously allocated by thread T0 here:
-    #0 0x7ff7a07ccb45  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1cb45
+    #0 0x7ff7a07ccb45  (<build>\tests\mfweb_timeout_repro.exe+0x1cb45
 )
-    #1 0x7ff7a07c1815  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x11815
+    #1 0x7ff7a07c1815  (<build>\tests\mfweb_timeout_repro.exe+0x11815
 )
-    #2 0x7ff7a07c30fa  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x130fa
+    #2 0x7ff7a07c30fa  (<build>\tests\mfweb_timeout_repro.exe+0x130fa
 )
-    #3 0x7ff7a07cdc3e  (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_timeout_repro.exe+0x1dc3e
+    #3 0x7ff7a07cdc3e  (<build>\tests\mfweb_timeout_repro.exe+0x1dc3e
 )
     #4 0x7ffb3dace956  (C:\WINDOWS\System32\KERNEL32.DLL+0x18002e956)
     #5 0x7ffb3f12ad6b  (C:\WINDOWS\SYSTEM32\ntdll.dll+0x1800aad6b)
 
-SUMMARY: AddressSanitizer: heap-use-after-free (D:\Dsh Work Poll\2026-09-19_2027_代码_百万并发Web框架\_work\build\tests\mfweb_t
+SUMMARY: AddressSanitizer: heap-use-after-free (<build>\tests\mfweb_t
 imeout_repro.exe+0x155aa) 
 Shadow bytes around the buggy address:
   0x1290967a1900: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
