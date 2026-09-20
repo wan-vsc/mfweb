@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <new>
 #include <mutex>
@@ -94,6 +95,23 @@ struct uring_engine::impl {
 };
 
 uring_engine::uring_engine() noexcept {
+    // ---- 必须忽略 SIGPIPE ----
+    //
+    // Linux 下向**已被对端关闭**的 socket 写入会产生 SIGPIPE，而它的**默认动作是直接
+    // 杀死进程** —— 没有异常、没有返回值、日志里什么都没有。
+    // Windows 侧没有这个信号（write 只是返回错误码），所以这个问题在 IOCP 后端
+    // 永远看不到，只有换到 Linux 才会以"服务端进程凭空消失"的形式出现。
+    //
+    // 这正是本机 c≈500 并发时服务端随机死掉的**真因**：
+    // 压测客户端先断开，服务端紧接着的一次 post_write 就吃到了 SIGPIPE。
+    // gdb 抓到的栈：
+    //   SIGPIPE -> sys_enter -> uring_engine::post_write -> write_awaiter::submit
+    //          -> await_suspend -> http::server::write_response
+    //
+    // 网络框架的标准做法（nginx / libuv / Boost.Asio 都如此）：进程级忽略，
+    // 让写操作返回 -EPIPE，交给连接层按普通 I/O 错误处理。
+    ::signal(SIGPIPE, SIG_IGN);
+
     impl_ = new (std::nothrow) impl{};
     if (impl_ == nullptr) {
         last_error_.store(ENOMEM, std::memory_order_relaxed);
