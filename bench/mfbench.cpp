@@ -17,6 +17,7 @@ int run_timer(int argc, char** argv);
 int run_router(int argc, char** argv);
 int run_http_server(int argc, char** argv);
 int run_http_load(int argc, char** argv);
+int run_http_server_blocking(int argc, char** argv);
 }  // namespace mfweb::bench
 
 namespace {
@@ -60,6 +61,9 @@ int main(int argc, char** argv) {
     if (command == "router") { return mfweb::bench::run_router(argc - 1, argv + 1); }
     if (command == "http-server") { return mfweb::bench::run_http_server(argc - 1, argv + 1); }
     if (command == "http-load") { return mfweb::bench::run_http_load(argc - 1, argv + 1); }
+    if (command == "http-server-blocking") {
+        return mfweb::bench::run_http_server_blocking(argc - 1, argv + 1);
+    }
 
     std::printf("未知基准: %.*s\n\n", static_cast<int>(command.size()), command.data());
     print_usage();
