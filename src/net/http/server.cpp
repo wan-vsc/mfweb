@@ -263,6 +263,45 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
         head += v;
         head += "\r\n";
     }
+    // ---- 自动补 Content-Length ----
+    //
+    // **这是必须的**：响应既没有 Content-Length、又不是 chunked、也不是 101 升级时，
+    // 客户端无从判断 body 在哪里结束，只能一直等连接关闭 —— curl / wrk 会直接挂死到超时。
+    //
+    // 这个缺陷长期没被发现，原因是**我们自己的压测客户端太宽容**：
+    // `mfbench http-load` 只统计"收到了多少字节"，从不校验响应是否完整。
+    // 换成真实 HTTP 客户端（curl / wrk）第一次跑就暴露了。
+    // 教训：自研压测端只能测吞吐，**不能替代**对协议正确性的第三方校验。
+    if (resp.status != 101) {
+        bool has_length = false;
+        for (const auto& [k, v] : resp.headers) {
+            (void)v;
+            if (k.size() != 14) { continue; }
+            const char* want = "content-length";
+            bool same = true;
+            for (std::size_t i = 0; i < 14; ++i) {
+                const char c = (k[i] >= 'A' && k[i] <= 'Z') ? static_cast<char>(k[i] - 'A' + 'a') : k[i];
+                if (c != want[i]) { same = false; break; }
+            }
+            if (same) { has_length = true; break; }
+        }
+        if (!has_length) {
+            std::size_t len = 0;
+            if (resp.stream_file) {
+                len = static_cast<std::size_t>(resp.file_length);
+            } else if (!resp.body_view.empty()) {
+                len = resp.body_view.size();
+            } else {
+                len = resp.body.size();
+            }
+            const auto [end, ec] = std::to_chars(numbuf, numbuf + sizeof(numbuf), len);
+            (void)ec;
+            head += "Content-Length: ";
+            head.append(numbuf, static_cast<std::size_t>(end - numbuf));
+            head += "\r\n";
+        }
+    }
+
     if (resp.status == 101) {
         head += "Connection: Upgrade\r\n\r\n";  // WebSocket 升级响应
     } else {

@@ -50,8 +50,9 @@ struct ring_state {
     int event_fd = -1;
     unsigned pending = 0;             // 已填进 SQ 但还没 enter 的条目数
 
-    std::mutex mu;                    // 保护 SQ 获取与提交
-    std::vector<io_operation*> ready;  // 收割缓冲，复用避免每次分配
+    // 这把锁同时保护三件事：SQ 获取/提交、CQE 读取与 cq_head 推进、SQ 满判断。
+    // 收割缓冲**不放这里**：它必须每次调用私有（见 harvest 里的注释）。
+    std::mutex mu;
 };
 
 // 从环里取一个 SQE。返回 nullptr 表示 SQ 满（调用方按"提交失败"处理）。
@@ -282,11 +283,16 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
     }
 
     // ---- 先看有没有已经就绪的完成事件 ----
-    auto drain = [&]() -> std::size_t {
-        r.ready.clear();
+    // 收割缓冲区必须是**每次调用私有**的：r.ready 是所有 worker 共享的，
+    // 一个线程清空它的同时另一个线程正在遍历 —— 那是数据竞争。
+    // 同时整个"读 CQE + 推进 cq_head"必须在锁内原子完成，
+    // 否则两个 worker 会读到同一批完成事件、把同一个协程唤醒两次。
+    auto drain = [&](std::vector<io_operation*>& out) -> std::size_t {
+        std::lock_guard<std::mutex> lk(r.mu);
+        out.clear();
         unsigned head = __atomic_load_n(r.cq_head, __ATOMIC_RELAXED);
         const unsigned tail = __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE);
-        while (head != tail && r.ready.size() < max_events) {
+        while (head != tail && out.size() < max_events) {
             const ::io_uring_cqe* cqe = &r.cqes[head & *r.cq_mask];
             const std::uint64_t tag = cqe->user_data;
             const int res = cqe->res;
@@ -311,16 +317,18 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
                     }
                 }
             }
-            r.ready.push_back(op);
+            out.push_back(op);
         }
         __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
-        return r.ready.size();
+        return out.size();
     };
 
-    std::size_t got = drain();
+    // 回调必须在**锁外**调用：on_complete 会恢复协程，协程可能立刻再 post_read/写，
+    // 那些路径要拿同一把锁，持锁回调会直接死锁。
+    std::vector<io_operation*> batch;
+    std::size_t got = drain(batch);
     if (got > 0 || !block) {
-        for (std::size_t i = 0; i < got; ++i) {
-            io_operation* op = r.ready[i];
+        for (io_operation* op : batch) {
             if (op->on_complete != nullptr) {
                 op->on_complete(op);
             }
@@ -379,9 +387,8 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
         }
     }
 
-    got = drain();
-    for (std::size_t i = 0; i < got; ++i) {
-        io_operation* op = r.ready[i];
+    got = drain(batch);
+    for (io_operation* op : batch) {
         if (op->on_complete != nullptr) {
             op->on_complete(op);
         }
