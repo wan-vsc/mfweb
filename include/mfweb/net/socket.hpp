@@ -9,6 +9,19 @@
 
 #include <cstdint>
 
+namespace mfweb::net {
+
+// listen(2) 的 backlog —— **不要直接用 SOMAXCONN**。
+//
+// Linux 把 SOMAXCONN 定义成 **4096**，而它就是"已完成连接队列"的长度。
+// 高并发建连时（实测：167 个源 IP × 6000 条一次性涌入）4096 的队列会被瞬间冲爆，
+// 内核直接丢包，客户端表现为"连上了又被断"，实测连接数死死卡在 86 万上不去。
+// 这里显式给一个大值，内核最终会把它截到 net.core.somaxconn。
+// Windows 侧 SOMAXCONN 是 0x7fffffff，同样接受这个值。
+inline constexpr int k_listen_backlog = 65535;
+
+}  // namespace mfweb::net
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -72,7 +85,7 @@ inline bool set_no_delay(io::native_socket s) noexcept {
         close_socket(s);
         return io::k_invalid_socket;
     }
-    if (::listen(s, SOMAXCONN) != 0) {
+    if (::listen(s, k_listen_backlog) != 0) {
         close_socket(s);
         return io::k_invalid_socket;
     }

@@ -117,10 +117,21 @@ coro::task<void> server::accept_loop(io::native_socket listener, std::string pre
 coro::task<void> server::serve_connection(io::native_socket s, std::string prefix,
                                           std::string root) {
     request_parser parser;
-    net::buffer buf{8192};
+    // 每连接读缓冲的**起步**大小。
+    //
+    // 为什么不能一上来就要 8 KiB：这是**每连接常驻**的开销。
+    // 实测 49.6 万并发连接时服务端每连接约 9.4 KB，其中最大的一块就是这个缓冲
+    // （208,892 连接时 RSS 1,941 MB）。按此外推，100 万连接需要约 9.4 GB，
+    // 超过本机 7.9 GB 内存 —— 也就是说**光是这个常数就挡住了"百万并发"**。
+    //
+    // 取 2 KiB：典型 HTTP 请求头只有几百字节，2 KiB 足够；
+    // 更大的请求由下面的 ensure_writable 按需扩容（行为与原来 8192 时完全一致，
+    // 只是起步更小、空闲连接不再常驻 8 KiB）。
+    constexpr std::size_t kReadSpace = 2048;
+    net::buffer buf{kReadSpace};
 
     for (;;) {
-        buf.ensure_writable(8192);
+        buf.ensure_writable(kReadSpace);
         const auto rs = co_await coro::async_read(*ctx_, s, buf.write_ptr(), buf.writable());
         if (!rs.ok() || rs.bytes == 0) { break; }  // 出错或对端关闭
         buf.commit(rs.bytes);
