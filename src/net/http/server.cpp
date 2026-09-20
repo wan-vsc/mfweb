@@ -78,7 +78,7 @@ void server::run() { ctx_->run(); }
 coro::task<void> server::accept_loop(io::native_socket listener, std::string prefix,
                                      std::string root) {
     for (;;) {
-        const io::native_socket accepted = io::iocp_engine::make_socket();
+        const io::native_socket accepted = io::native_engine::make_socket();
         if (accepted == io::k_invalid_socket) { co_return; }
         ctx_->engine().attach(accepted);
 

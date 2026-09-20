@@ -4,7 +4,7 @@
 //
 // 只放"与平台打交道、与协议无关"的部分；连接级的状态机在 connection 里。
 
-#include <mfweb/io/iocp_engine.hpp>
+#include <mfweb/io/native_engine.hpp>
 #include <mfweb/runtime/io_context.hpp>
 
 #include <cstdint>
@@ -12,6 +12,12 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace mfweb::net {
@@ -49,7 +55,7 @@ inline bool set_no_delay(io::native_socket s) noexcept {
 // 创建监听套接字：绑定到指定地址并 listen，同时关联到完成端口
 [[nodiscard]] inline io::native_socket make_listener(runtime::io_context& ctx, std::uint16_t port,
                                                      const char* bind_ip = "127.0.0.1") noexcept {
-    const io::native_socket s = io::iocp_engine::make_socket();
+    const io::native_socket s = io::native_engine::make_socket();
     if (s == io::k_invalid_socket) { return s; }
 
     set_reuse_address(s);
@@ -80,7 +86,7 @@ inline bool set_no_delay(io::native_socket s) noexcept {
 // 创建尚未连接的客户端套接字（已关联完成端口）。
 // ConnectEx 要求套接字先绑定到本地地址 —— 这一步在 post_connect 里做。
 [[nodiscard]] inline io::native_socket make_client_socket(runtime::io_context& ctx) noexcept {
-    const io::native_socket s = io::iocp_engine::make_socket();
+    const io::native_socket s = io::native_engine::make_socket();
     if (s == io::k_invalid_socket) { return s; }
     if (!ctx.engine().attach(s)) {
         close_socket(s);

@@ -24,7 +24,7 @@
 // 2 万；瓶颈就是这里 —— 其余 23 个核在闲着。
 
 #include <mfweb/coro/task.hpp>
-#include <mfweb/io/iocp_engine.hpp>
+#include <mfweb/io/native_engine.hpp>
 #include <mfweb/runtime/event_loop.hpp>
 
 #include <array>
@@ -51,7 +51,7 @@ public:
     [[nodiscard]] bool valid() const noexcept { return engine_.valid(); }
     [[nodiscard]] int last_error() const noexcept { return engine_.last_error(); }
 
-    [[nodiscard]] io::iocp_engine& engine() noexcept { return engine_; }
+    [[nodiscard]] io::native_engine& engine() noexcept { return engine_; }
     [[nodiscard]] std::size_t thread_count() const noexcept { return loops_.size(); }
 
     // 指定编号的循环（主要给测试与单线程驱动用）
@@ -105,7 +105,7 @@ private:
         char padding[64 - sizeof(std::atomic<std::int64_t>)];
     };
 
-    io::iocp_engine engine_;
+    io::native_engine engine_;
     std::vector<std::unique_ptr<event_loop>> loops_;
     std::vector<std::thread> threads_;
     std::array<work_shard, k_work_shards> work_shards_{};

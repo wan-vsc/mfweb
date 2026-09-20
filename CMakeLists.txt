@@ -33,6 +33,15 @@ option(MFWEB_BUILD_EXAMPLES "构建示例程序" ON)
 # 源文件用 GLOB_RECURSE + CONFIGURE_DEPENDS：新增 src/**.cpp 时自动纳入，无需改动本文件
 file(GLOB_RECURSE MFWEB_LIB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
+# 平台 I/O 后端：Windows = IOCP，Linux = io_uring。
+# 两个 .cpp 提供**同一套公开成员**（见 io/native_engine.hpp），但各自包含平台专有头文件，
+# 因此必须按平台二选一，不能同时进同一个目标。
+if(WIN32)
+    list(REMOVE_ITEM MFWEB_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/io/uring_engine.cpp")
+else()
+    list(REMOVE_ITEM MFWEB_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/io/iocp_engine.cpp")
+endif()
+
 add_library(mfweb STATIC ${MFWEB_LIB_SOURCES})
 add_library(mfweb::mfweb ALIAS mfweb)
 
@@ -43,6 +52,10 @@ mfweb_apply_common_options(mfweb)
 
 if(WIN32)
     target_link_libraries(mfweb PUBLIC ws2_32 mswsock)
+else()
+    # Linux 侧多线程事件循环需要 pthread
+    find_package(Threads REQUIRED)
+    target_link_libraries(mfweb PUBLIC Threads::Threads)
 endif()
 
 # ---------------------------------------------------------------- 子目录

@@ -23,7 +23,7 @@ using mfweb::coro::async_write;
 
 mfweb::coro::task<void> echo_server(mfweb::runtime::io_context& ctx,
                                     mfweb::io::native_socket listener, bool& served) {
-    const mfweb::io::native_socket accepted = mfweb::io::iocp_engine::make_socket();
+    const mfweb::io::native_socket accepted = mfweb::io::native_engine::make_socket();
     MFW_CHECK(accepted != mfweb::io::k_invalid_socket);
     MFW_CHECK(ctx.engine().attach(accepted));
 

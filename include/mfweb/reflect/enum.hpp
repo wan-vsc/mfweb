@@ -58,10 +58,22 @@ template <class E, E Value>
     if (end == std::string_view::npos) { return {}; }
     std::string_view full = sig.substr(comma + 1, end - comma - 1);
 #else
-    constexpr std::string_view marker = "value = ";
-    const std::size_t start = sig.find(marker);
-    if (start == std::string_view::npos) { return {}; }
-    const std::size_t begin = start + marker.size();
+    // GCC/Clang 的 __PRETTY_FUNCTION__ 形如：
+    //   "... enum_signature() [with E = color; E Value = color::blue]"
+    // 注意模板形参在源码里声明为 <class E, E Value>，GCC 会**原样回显形参名**，
+    // 所以标记是 "Value = "（大写 V），不是 "value = "。
+    // —— 这正是 Windows 上 183/183 全绿、Linux 上这 3 个用例挂掉的原因。
+    constexpr std::string_view marker = "Value = ";
+    constexpr std::string_view marker_alt = "value = ";
+    std::size_t start = sig.find(marker);
+    if (start != std::string_view::npos) {
+        start += marker.size();
+    } else {
+        start = sig.find(marker_alt);
+        if (start == std::string_view::npos) { return {}; }
+        start += marker_alt.size();
+    }
+    const std::size_t begin = start;
     std::size_t end = sig.find(';', begin);
     if (end == std::string_view::npos) { end = sig.find(']', begin); }
     if (end == std::string_view::npos) { return {}; }

@@ -29,13 +29,24 @@
 
 namespace mfweb::router {
 
+// 一个路径参数。
+//
+// 这里**故意不用 std::pair**：libstdc++ 的 std::pair 有用户提供的拷贝构造函数，
+// 因此 std::is_trivially_copyable_v 为 **false**（MSVC 的 STL 则是 true）。
+// small_vector 依赖平凡复制做 memcpy 扩容，所以换成显式 POD。
+// —— 这是本项目"Windows 上编得过、Linux 上编不过"的第一处真实差异。
+struct param_entry {
+    std::string_view name;
+    std::string_view value;
+};
+
 // 路径参数（值指向请求目标串，生命周期随请求处理）
 class route_params {
 public:
     void clear() noexcept { items_.clear(); }
 
     void add(std::string_view name, std::string_view value) {
-        items_.emplace_back(name, value);
+        items_.push_back(param_entry{name, value});
     }
 
     void truncate(std::size_t n) noexcept { items_.resize(n); }
@@ -50,16 +61,16 @@ public:
         return {};
     }
 
-    [[nodiscard]] std::string_view at(std::size_t i) const noexcept { return items_[i].second; }
+    [[nodiscard]] std::string_view at(std::size_t i) const noexcept { return items_[i].value; }
     [[nodiscard]] std::string_view name_at(std::size_t i) const noexcept {
-        return items_[i].first;
+        return items_[i].name;
     }
 
 private:
     // 用 small_vector 而非 std::vector：路由参数每请求都要构造一次。
     // 内联容量取 4（而不是 8）：这个对象每请求构造一次，内联缓冲越大，
     // 构造成本越高；典型路由参数不超过 4 个，够了。
-    util::small_vector<std::pair<std::string_view, std::string_view>, 4> items_;
+    util::small_vector<param_entry, 4> items_;
 };
 
 enum class match_result { found, not_found, method_not_allowed };

@@ -19,15 +19,17 @@
 #include <shellapi.h>
 #endif
 
-int main() {
+int main(int argc, char** argv) {
 #ifdef _WIN32
     // 关键：Windows 的 argv 按 ANSI 代码页(936/GBK)编码，中文路径会被读坏。
     // 用 CommandLineToArgvW 拿 UTF-16，再转成 UTF-8，保证与框架内部的 UTF-8 路径约定一致。
-    int argc = 0;
-    wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    (void)argv;
+    int argc_w = 0;
+    wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &argc_w);
+    argc = argc_w;
 #else
-    int argc = _argc;
-    char** wargv = _argv;
+    // Linux 下 argv 本来就是 UTF-8 字节流，直接使用，无需转换。
+    char** wargv = argv;
 #endif
 
     if (argc < 3) {

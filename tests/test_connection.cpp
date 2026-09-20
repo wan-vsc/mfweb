@@ -32,7 +32,7 @@ struct echo_server {
 
     mfweb::coro::task<void> accept_loop() {
         while (accepted < target) {
-            const mfweb::io::native_socket s = mfweb::io::iocp_engine::make_socket();
+            const mfweb::io::native_socket s = mfweb::io::native_engine::make_socket();
             if (s == mfweb::io::k_invalid_socket) { co_return; }
             ctx->engine().attach(s);
 
