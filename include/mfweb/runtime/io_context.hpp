@@ -27,8 +27,10 @@
 #include <mfweb/io/iocp_engine.hpp>
 #include <mfweb/runtime/event_loop.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -68,11 +70,14 @@ public:
     [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_relaxed); }
 
     // ---- 工作量计数（由 I/O Awaiter 维护）
-    void add_work() noexcept { work_.fetch_add(1, std::memory_order_relaxed); }
-    void release_work() noexcept { work_.fetch_sub(1, std::memory_order_relaxed); }
-    [[nodiscard]] std::size_t pending_io() const noexcept {
-        return work_.load(std::memory_order_relaxed);
-    }
+    //
+    // **分片计数**：早期用单个 std::atomic，16 个线程每个 I/O 操作都做一次 RMW，
+    // 全打在同一缓存行上 → 缓存行来回弹跳，是多线程扩展性差的主因之一。
+    // 现在每线程挑一个分片（alignas(64) 避免伪共享），只在读总数时求和。
+    // 分片值可能为负（提交与完成不在同一线程），这没关系 —— 只求和。
+    void add_work() noexcept;
+    void release_work() noexcept;
+    [[nodiscard]] std::size_t pending_io() const noexcept;
 
     [[nodiscard]] bool has_work() const noexcept {
         return pending_io() > 0 || loop(0).has_pending_tasks() || !loop(0).timers().empty();
@@ -89,13 +94,21 @@ public:
     // 启动一个顶层协程；协程完成后其帧自动销毁（detached 语义）
     void spawn(coro::task<void> t);
 
+    static constexpr std::size_t k_work_shards = 32;
+
 private:
     void worker(std::size_t index);
+
+    // 每个分片独占一条缓存行（64 字节），避免伪共享
+    struct alignas(64) work_shard {
+        std::atomic<std::int64_t> count{0};
+        char padding[64 - sizeof(std::atomic<std::int64_t>)];
+    };
 
     io::iocp_engine engine_;
     std::vector<std::unique_ptr<event_loop>> loops_;
     std::vector<std::thread> threads_;
-    std::atomic<std::size_t> work_{0};
+    std::array<work_shard, k_work_shards> work_shards_{};
     std::atomic<bool> stopped_{false};
 };
 

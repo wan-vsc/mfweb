@@ -22,6 +22,10 @@ spawn_root spawn_body(coro::task<void> t) { co_await std::move(t); }
 thread_local io_context* tls_ctx = nullptr;
 thread_local std::size_t tls_loop_index = 0;
 
+// 工作量计数分片：每个线程固定用一个分片，避免所有线程抢同一条缓存行
+thread_local std::size_t tls_shard = 0;
+std::atomic<std::size_t> g_next_shard{1};  // 0 号留给非工作线程
+
 constexpr unsigned k_max_wait_ms = 8;
 
 }  // namespace
@@ -97,9 +101,32 @@ std::size_t io_context::run_until_idle(std::size_t max_rounds, unsigned timeout_
     return rounds;
 }
 
+// 每个线程固定用一个分片，避免所有线程抢同一条缓存行
+[[nodiscard]] std::size_t shard_of_current_thread() noexcept {
+    if (tls_shard == 0) { tls_shard = g_next_shard.fetch_add(1) % io_context::k_work_shards; }
+    return tls_shard;
+}
+
+void io_context::add_work() noexcept {
+    work_shards_[shard_of_current_thread()].count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void io_context::release_work() noexcept {
+    work_shards_[shard_of_current_thread()].count.fetch_sub(1, std::memory_order_relaxed);
+}
+
+std::size_t io_context::pending_io() const noexcept {
+    std::int64_t total = 0;
+    for (const auto& shard : work_shards_) {
+        total += shard.count.load(std::memory_order_relaxed);
+    }
+    return total > 0 ? static_cast<std::size_t>(total) : 0;
+}
+
 void io_context::worker(std::size_t index) {
     tls_ctx = this;
     tls_loop_index = index;
+    tls_shard = (index + 1) % k_work_shards;  // 每个 worker 固定一个分片
     event_loop& lp = *loops_[index];
 
     while (!stopped_.load(std::memory_order_relaxed)) {

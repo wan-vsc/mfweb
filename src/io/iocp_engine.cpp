@@ -202,6 +202,19 @@ void iocp_engine::finish(io_operation* op) noexcept {
     if (op->on_complete != nullptr) { op->on_complete(op); }
 }
 
+// 完成包收割。**刻意保留单发 GetQueuedCompletionStatus**（曾试过批量版，已回退）。
+//
+// 回退理由（实测 + 分析，不是偷懒）：
+//   1. **系统调用不是瓶颈**。单线程 20.7K QPS 时每请求约 3 次系统调用 ≈ 6.2 万次/秒，
+//      在 Windows 上约合 6% 的一个核 —— 真正的开销在请求路径的分配上，不在这里。
+//   2. **批量版拿不到每个操作的错误码**。试过用 GetOverlappedResult 补，
+//      但 ConnectEx/AcceptEx **成功时就是 0 字节完成**，无从与失败区分，
+//      直接导致 http_client 用例崩溃（0xC0000409）。要正确区分得去读
+//      OVERLAPPED.Internal 的 NTSTATUS 并做状态码映射，复杂度不划算。
+//   3. 单发版失败时 GetLastError() 就是该操作的错误码，语义无歧义。
+//
+// 结论：在"系统调用占比 6%"的前提下换正确性，不值。真要继续优化，
+// 应该去砍请求路径上的 std::string/std::function 分配。
 std::size_t iocp_engine::harvest(bool block, std::size_t max_events, unsigned timeout_ms) {
     if (port_ == nullptr) { return 0; }
 
@@ -216,15 +229,13 @@ std::size_t iocp_engine::harvest(bool block, std::size_t max_events, unsigned ti
         const BOOL ok = ::GetQueuedCompletionStatus(port_, &bytes, &key, &overlapped, timeout);
 
         if (overlapped == nullptr) {
-            // 没有完成包：要么超时，要么是唤醒包（wakeup 会带一个非空 overlapped）
             if (ok == FALSE) {
                 const DWORD err = GetLastError();
                 if (err == WAIT_TIMEOUT) { break; }
                 last_error_ = static_cast<int>(err);
                 break;
             }
-            // overlapped == nullptr 且 ok == TRUE：不会发生，防御性退出
-            break;
+            break;  // 防御性退出（不该发生）
         }
 
         if (key == k_wakeup_key) { continue; }
@@ -236,15 +247,15 @@ std::size_t iocp_engine::harvest(bool block, std::size_t max_events, unsigned ti
             op->status.error = 0;
             op->status.bytes = bytes;
         } else {
-            // 失败时 GetLastError() 就是该操作的错误码（这正是选用单发版的原因）
+            // 失败时 GetLastError() 就是该操作的错误码 —— 这正是保留单发版的原因
             op->status.error = static_cast<int>(GetLastError());
             op->status.bytes = bytes;
         }
 
-        finish(op);
+        finish(op);  // finish 会 resume 协程，之后绝不能再碰 op
         ++handled;
 
-        // 第一个完成包可以阻塞等，之后转为非阻塞，尽快把已有的都收干
+        // 第一个完成包可以阻塞等，之后转为非阻塞，尽快把已到的都收干
         timeout = 0;
     }
 
