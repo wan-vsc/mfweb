@@ -55,10 +55,11 @@ struct ring_state {
     unsigned long overflow_seen = 0;  // CQ 溢出被观察到的次数（诊断用）
     bool need_recovery = false;       // 需要做一次溢出恢复
 
-    // 在途操作登记表：诊断用。已经提交给内核、但还没收到完成事件的操作。
-    // 停滞时打印它们，就能知道**到底是哪个操作的完成事件丢了**。
-    std::vector<io_operation*> in_flight;
-    unsigned stall_ticks = 0;         // 连续"有在途操作却收不到完成事件"的次数
+    // 注：这里曾有一张 in_flight 在途操作登记表和停滞检测器，用于排查
+    // "CQ 完成事件是否丢失"。**已移除** —— 它每次提交/完成 I/O 都要做一次
+    // 线性查找与 vector 删除，是实打实的热路径开销，而排查目的已经达到
+    // （结论：事件没丢，是上层把"读到的字节数"当成了"写出的字节数"，
+    //  详见 03_性能实测报告.md §4.6）。
 
     // 这把锁同时保护三件事：SQ 获取/提交、CQE 读取与 cq_head 推进、SQ 满判断。
     // 收割缓冲**不放这里**：它必须每次调用私有（见 harvest 里的注释）。
@@ -228,7 +229,6 @@ bool uring_engine::post_accept(io_operation& op, native_socket listener,
     }
     fill_common(sqe, IORING_OP_ACCEPT, listener, op);
     op.kind = op_kind::accept;
-    r.in_flight.push_back(&op);
     // ACCEPT 不接受"预创建套接字"（这点与 AcceptEx 不同），
     // 完成时我们会 dup2 到调用方给的 fd 上，接口对上层保持不变。
     op.socket = listener;
@@ -248,7 +248,6 @@ bool uring_engine::post_connect(io_operation& op, native_socket s, const sockadd
     }
     fill_common(sqe, IORING_OP_CONNECT, s, op);
     op.kind = op_kind::connect;
-    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(addr);
     sqe->off = static_cast<std::uint64_t>(addr_len);
     op.socket = s;
@@ -267,7 +266,6 @@ bool uring_engine::post_read(io_operation& op, native_socket s, void* data,
     }
     fill_common(sqe, IORING_OP_READ, s, op);
     op.kind = op_kind::read;
-    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(data);
     sqe->len = static_cast<unsigned>(len);
     op.socket = s;
@@ -286,7 +284,6 @@ bool uring_engine::post_write(io_operation& op, native_socket s, const void* dat
     }
     fill_common(sqe, IORING_OP_WRITE, s, op);
     op.kind = op_kind::write;
-    r.in_flight.push_back(&op);
     sqe->addr = reinterpret_cast<std::uint64_t>(data);
     sqe->len = static_cast<unsigned>(len);
     op.socket = s;
@@ -368,9 +365,6 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
                     }
                 }
             }
-            for (std::size_t k = 0; k < r.in_flight.size(); ++k) {
-                if (r.in_flight[k] == op) { r.in_flight.erase(r.in_flight.begin() + static_cast<long>(k)); break; }
-            }
             out.push_back(op);
         }
         __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
@@ -402,32 +396,12 @@ std::size_t uring_engine::harvest(bool block, std::size_t max_events, unsigned t
     }
 
     if (got > 0 || !block) {
-        r.stall_ticks = 0;
         for (io_operation* op : batch) {
             if (op->on_complete != nullptr) {
                 op->on_complete(op);
             }
         }
         return got;
-    }
-
-    // ---- 停滞检测 ----
-    // 明明有在途操作、却连续很多次唤醒都收不到任何完成事件 —— 那就是丢了事件。
-    if (!r.in_flight.empty()) {
-        if (++r.stall_ticks == 300) {
-            std::fprintf(stderr,
-                         "[mfweb/uring] 停滞：在途 %zu 个操作但连续 300 次无完成事件 "
-                         "(cq_head=%u cq_tail=%u sq_flags=0x%x overflow=%lu)\n",
-                         r.in_flight.size(), *r.cq_head, *r.cq_tail,
-                         *r.sq_flags, r.overflow_seen);
-            for (io_operation* op : r.in_flight) {
-                std::fprintf(stderr, "    kind=%d socket=%d status=(%d,%zu)\n",
-                             static_cast<int>(op->kind), op->socket, op->status.error,
-                             op->status.bytes);
-            }
-        }
-    } else {
-        r.stall_ticks = 0;
     }
 
     // ---- 阻塞等待：用一个 TIMEOUT 操作给 enter(GETEVENTS) 设上限 ----
