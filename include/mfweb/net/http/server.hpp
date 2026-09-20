@@ -15,6 +15,7 @@
 #include <mfweb/net/http/parser.hpp>
 #include <mfweb/net/http/response.hpp>
 #include <mfweb/net/socket.hpp>
+#include <mfweb/net/websocket/session.hpp>
 #include <mfweb/runtime/io_context.hpp>
 
 #include <cstdint>
@@ -36,6 +37,9 @@ public:
     // 把 URL 前缀映射到磁盘目录（例如 "/files" → "./www"）
     void serve_static(std::string url_prefix, std::string root);
 
+    // 注册 WebSocket 端点（路径精确匹配）。握手完成后回调 handler 设置 on_message。
+    void ws(std::string path, net::websocket::ws_handler handler);
+
     // 驱动事件循环直到 stop()
     void run();
 
@@ -54,6 +58,8 @@ private:
     io::native_socket listener_ = io::k_invalid_socket;
     std::string static_prefix_;
     std::string static_root_;
+    std::string ws_path_;
+    net::websocket::ws_handler ws_handler_;
 };
 
 }  // namespace mfweb::http

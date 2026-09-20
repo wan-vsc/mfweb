@@ -4,6 +4,7 @@
 #include <mfweb/net/http/file_io.hpp>
 #include <mfweb/net/http/static_file.hpp>
 
+#include <cctype>
 #include <fstream>
 #include <vector>
 
@@ -12,9 +13,40 @@ namespace {
 
 constexpr std::size_t kChunk = 64 * 1024;
 
-[[nodiscard]] std::string url_decode_target(std::string_view target) {
-    // 目标里的路径部分原样传给 resolve_path（它会做 URL 解码），这里只拿原始串。
-    return std::string(target);
+[[nodiscard]] bool iequals_sv(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) { return false; }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 头字段值（大小写不敏感）是否等于 expected
+[[nodiscard]] bool header_equals(const request& req, const char* name, const char* expected) {
+    return iequals_sv(req.header(name), expected);
+}
+
+// 头字段值是否包含给定 token（逗号分隔，大小写不敏感）
+[[nodiscard]] bool header_contains_token(const request& req, const char* name,
+                                         const char* token) {
+    const std::string_view value = req.header(name);
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t comma = value.find(',', start);
+        const std::string_view part =
+            (comma == std::string_view::npos) ? value.substr(start)
+                                              : value.substr(start, comma - start);
+        std::size_t b = 0, e = part.size();
+        while (b < e && (part[b] == ' ' || part[b] == '\t')) { ++b; }
+        while (e > b && (part[e - 1] == ' ' || part[e - 1] == '\t')) { --e; }
+        if (iequals_sv(part.substr(b, e - b), token)) { return true; }
+        if (comma == std::string_view::npos) { break; }
+        start = comma + 1;
+    }
+    return false;
 }
 
 }  // namespace
@@ -24,6 +56,12 @@ bool server::listen(std::uint16_t port, const char* bind_ip) {
     if (listener_ == io::k_invalid_socket) { return false; }
     ctx_->spawn(accept_loop(listener_, static_prefix_, static_root_));
     return true;
+}
+
+void server::ws(std::string path, net::websocket::ws_handler handler) {
+    if (!path.empty() && path.front() != '/') { path.insert(path.begin(), '/'); }
+    ws_path_ = std::move(path);
+    ws_handler_ = std::move(handler);
 }
 
 void server::serve_static(std::string url_prefix, std::string root) {
@@ -81,6 +119,27 @@ coro::task<void> server::serve_connection(io::native_socket s, std::string prefi
             }
 
             buf.consume(consumed);
+
+            // WebSocket 升级（RFC 6455 §4.2）
+            if (!ws_path_.empty() && req.target.substr(0, ws_path_.size()) == ws_path_ &&
+                header_equals(req, "upgrade", "websocket") &&
+                header_contains_token(req, "connection", "upgrade") &&
+                !req.header("sec-websocket-key").empty()) {
+                response r101;
+                r101.status = 101;
+                r101.set("Upgrade", "websocket");
+                r101.set("Connection", "Upgrade");
+                r101.set("Sec-WebSocket-Accept",
+                         net::websocket::compute_accept_key(req.header("sec-websocket-key")));
+                const bool ok = co_await write_response(s, r101, true);
+                if (!ok) {
+                    keep_going = false;
+                    break;
+                }
+                co_await net::websocket::run_ws_session(*ctx_, s, ws_handler_);
+                keep_going = false;
+                break;
+            }
 
             const bool head_only = (req.method_ == method::head);
             const response resp = handle_request(req, prefix, root);
@@ -147,7 +206,11 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
     for (const auto& [k, v] : resp.headers) {
         head += k + ": " + v + "\r\n";
     }
-    head += "Connection: keep-alive\r\n\r\n";
+    if (resp.status == 101) {
+        head += "Connection: Upgrade\r\n\r\n";  // WebSocket 升级响应
+    } else {
+        head += "Connection: keep-alive\r\n\r\n";
+    }
 
     const auto wh = co_await coro::async_write(*ctx_, s, head.data(), head.size());
     if (!wh.ok()) { co_return false; }
