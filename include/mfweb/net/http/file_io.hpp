@@ -80,7 +80,9 @@ namespace mfweb::http {
 // 定位读（pread / OVERLAPPED.Offset 同步用法）天然支持 Range 与多线程复用同一句柄。
 #ifdef _WIN32
 using native_handle = HANDLE;
-inline constexpr native_handle k_bad_handle = INVALID_HANDLE_VALUE;
+// 注意：**不能用 constexpr** —— INVALID_HANDLE_VALUE 是 ((HANDLE)(LONG_PTR)-1)，
+// 即"把整数强转成指针"，MSVC 会报 C2131（表达式不是常数）。
+inline const native_handle k_bad_handle = INVALID_HANDLE_VALUE;
 #else
 using native_handle = int;
 inline constexpr native_handle k_bad_handle = -1;

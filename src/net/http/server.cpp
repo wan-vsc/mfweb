@@ -1,3 +1,5 @@
+// 诊断打点需要
+#include <chrono>
 #include <mfweb/net/http/server.hpp>
 
 #include <mfweb/net/buffer.hpp>
@@ -19,7 +21,7 @@ namespace {
 // 2 GB 传输耗时 2.43 s，即每 64 KiB 块约 73 µs —— 与 HTTP 每请求延迟同量级，
 // 说明瓶颈是**每次异步操作的固定开销**，而不是带宽。
 // 加大块就能线性摊薄这个开销（Linux/io_uring 侧每块约 32 µs，所以同样块大小下快一倍多）。
-constexpr std::size_t kChunk = 512 * 1024;
+constexpr std::size_t kChunk = 2 * 1024 * 1024;
 
 [[nodiscard]] bool iequals_sv(std::string_view a, std::string_view b) noexcept {
     if (a.size() != b.size()) { return false; }
@@ -363,14 +365,41 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
         std::vector<char> chunk(kChunk);
         std::uint64_t offset = resp.file_offset;
         std::uint64_t remaining = resp.file_length;
+
+        // ---- 诊断打点（P12 遗留：Windows 侧大文件只有 0.9 GB/s，根因未定位）----
+        // 把一次发送拆成"读文件"与"写套接字"，先确定时间花在哪一侧，而不是继续猜假设。
+        double t_read = 0.0;
+        double t_write = 0.0;
+        std::size_t nchunk = 0;
+        std::size_t nwrite = 0;
+        const auto clock_now = []() noexcept {
+            return std::chrono::duration<double>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        };
+
         while (remaining > 0) {
             const std::size_t want =
                 remaining < kChunk ? static_cast<std::size_t>(remaining) : kChunk;
+            const double a = clock_now();
             const std::size_t got = in.read_at(offset, chunk.data(), want);
+            const double b = clock_now();
             if (got == 0) { break; }
             if (!co_await write_all(*ctx_, s, chunk.data(), got)) { co_return false; }
+            const double c = clock_now();
+            t_read += b - a;
+            t_write += c - b;
+            ++nchunk;
+            ++nwrite;
             offset += got;
             remaining -= got;
+        }
+        if (nchunk > 0) {
+            const double tot = t_read + t_write;
+            std::fprintf(stderr,
+                         "[stream] 块=%zu 写次数=%zu  读=%.3fs(%.1f%%)  写=%.3fs(%.1f%%)  合计=%.3fs\n",
+                         nchunk, nwrite, t_read, tot > 0 ? 100.0 * t_read / tot : 0.0, t_write,
+                         tot > 0 ? 100.0 * t_write / tot : 0.0, tot);
         }
         co_return true;
     }
