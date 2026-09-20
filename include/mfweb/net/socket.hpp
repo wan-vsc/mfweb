@@ -108,12 +108,18 @@ inline bool set_no_delay(io::native_socket s) noexcept {
     return s;
 }
 
-[[nodiscard]] inline sockaddr_in loopback_address(std::uint16_t port) noexcept {
+[[nodiscard]] inline sockaddr_in ipv4_address(const char* ip, std::uint16_t port) noexcept {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (ip == nullptr || ::inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    }
     return addr;
+}
+
+[[nodiscard]] inline sockaddr_in loopback_address(std::uint16_t port) noexcept {
+    return ipv4_address("127.0.0.1", port);
 }
 
 }  // namespace mfweb::net

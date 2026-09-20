@@ -44,7 +44,9 @@ struct load_stats {
 }
 
 // 顺序请求-响应循环
-coro::task<void> load_worker(runtime::io_context& ctx, std::uint16_t port, std::string request,
+// 目标地址按值传入（协程帧持有），这样压测端可以指向别的机器 —— 
+// P9 的"多线程扩展效率只有 19%"必须在服务端与压测端**分离**的前提下才能定性。
+coro::task<void> load_worker(runtime::io_context& ctx, sockaddr_in addr, std::string request,
                              std::chrono::steady_clock::time_point deadline, load_stats* stats) {
     const io::native_socket s = net::make_client_socket(ctx);
     if (s == io::k_invalid_socket) {
@@ -53,7 +55,6 @@ coro::task<void> load_worker(runtime::io_context& ctx, std::uint16_t port, std::
     }
     net::set_no_delay(s);
 
-    const sockaddr_in addr = net::loopback_address(port);
     const auto cs = co_await coro::async_connect(ctx, s, reinterpret_cast<const sockaddr*>(&addr),
                                                  sizeof(addr));
     if (!cs.ok()) {
@@ -117,8 +118,9 @@ coro::task<void> load_worker(runtime::io_context& ctx, std::uint16_t port, std::
 
 void print_usage() {
     std::printf("用法:\n");
-    std::printf("  mfbench http-server <port> [body_bytes] [threads]\n");
-    std::printf("  mfbench http-load   <port> <conns> <seconds>\n");
+    std::printf("  mfbench http-server <port> [body_bytes] [threads] [bind_ip]\n");
+    std::printf("      bind_ip 默认 127.0.0.1；分机压测时传 0.0.0.0 或具体网卡地址\n");
+    std::printf("  mfbench http-load   <port> <conns> <seconds> [host_ip]\n");
 }
 
 }  // namespace
@@ -131,6 +133,10 @@ int run_http_server(int argc, char** argv) {
     const auto port = static_cast<std::uint16_t>(parse_arg(argv[1], 19090));
     const auto body_bytes = static_cast<std::size_t>(parse_arg(argc > 2 ? argv[2] : nullptr, 128));
     const auto threads = static_cast<std::size_t>(parse_arg(argc > 3 ? argv[3] : nullptr, 1));
+    // 绑定地址。默认仍是 127.0.0.1（安全），但**分机压测**时必须能绑到对外地址，
+    // 否则另一台机器/虚拟机连不上 —— P9 的"多线程扩展效率只有 19%"
+    // 就是因为服务端与压测端在同一台机器上抢核而无法定性。
+    const char* bind_ip = (argc > 4 && argv[4] != nullptr) ? argv[4] : "127.0.0.1";
 
     runtime::io_context ctx{threads};
     if (!ctx.valid()) {
@@ -153,12 +159,12 @@ int run_http_server(int argc, char** argv) {
         r.body_view = payload;
     });
 
-    if (!srv.listen(port)) {
-        std::printf("监听 %u 失败\n", port);
+    if (!srv.listen(port, bind_ip)) {
+        std::printf("监听 %s:%u 失败\n", bind_ip, port);
         return 2;
     }
-    std::printf("mfweb 压测服务端已启动：http://127.0.0.1:%u/hello（%zu 字节响应，%zu 个事件循环线程）\n",
-                port, body_bytes, ctx.thread_count());
+    std::printf("mfweb 压测服务端已启动：http://%s:%u/hello（%zu 字节响应，%zu 个事件循环线程）\n",
+                bind_ip, port, body_bytes, ctx.thread_count());
     std::fflush(stdout);
     srv.run();
     return 0;
@@ -172,6 +178,8 @@ int run_http_load(int argc, char** argv) {
     const auto port = static_cast<std::uint16_t>(parse_arg(argv[1], 19090));
     const auto conns = static_cast<long long>(parse_arg(argv[2], 1000));
     const auto seconds = static_cast<long long>(parse_arg(argv[3], 10));
+    const char* host_ip = (argc > 4 && argv[4] != nullptr) ? argv[4] : "127.0.0.1";
+    const sockaddr_in addr = net::ipv4_address(host_ip, port);
 
     runtime::io_context ctx;
     if (!ctx.valid()) {
@@ -186,7 +194,7 @@ int run_http_load(int argc, char** argv) {
     const auto deadline = clock_type::now() + std::chrono::seconds(seconds);
 
     for (long long i = 0; i < conns; ++i) {
-        ctx.spawn(load_worker(ctx, port, request, deadline, &stats));
+        ctx.spawn(load_worker(ctx, addr, request, deadline, &stats));
     }
 
     std::printf("bench,conns,seconds,completed,errors,bytes,qps\n");
