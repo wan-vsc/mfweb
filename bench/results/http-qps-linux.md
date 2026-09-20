@@ -263,7 +263,7 @@ Linux/io_uring 上 4 次里 3 次卡死。**这是同一个潜伏缺陷的两个
 8 KiB 是"典型 HTTP 请求头几百字节"的十倍以上，纯属浪费。
 改为 2 KiB 起步、由 `ensure_writable` 按需扩容（行为与原实现一致，只是起步更小）。
 
-**效果：每连接内存 9.3 KB → 3.5 KB（降到 38%）。**
+**效果：每连接内存 9.4 KB → 3.5 KB（降到 38%）。**
 
 **（2）listen backlog 不再用 SOMAXCONN**（`include/mfweb/net/socket.hpp`）
 
