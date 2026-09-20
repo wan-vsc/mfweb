@@ -19,6 +19,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace mfweb::http {
@@ -59,5 +62,88 @@ namespace mfweb::http {
     return out;
 }
 #endif
+
+// ---------------------------------------------------------------- 原生文件句柄
+//
+// **为什么不用 std::ifstream 读文件**：实测（本机 Windows / NVMe / 页缓存热）——
+//
+//     块大小      std::ifstream      Win32 ReadFile
+//     64 KiB      1.46 GB/s          5.84 GB/s
+//     512 KiB     1.47 GB/s          7.16 GB/s
+//     1 MiB       1.45 GB/s          6.96 GB/s
+//
+// **MSVC 的 ifstream 卡在 ~1.46 GB/s，而且与块大小无关** —— 它多了一层流缓冲，
+// 开销在小块上也下不来。差了 4~5 倍，而且这正好卡在大文件发送路径上：
+// 框架传 2 GiB 只有 0.92 GB/s，而同一台机器裸 loopback TCP 上限是 3.67 GB/s。
+//
+// 换成平台原生句柄 + 定位读之后，读侧不再是瓶颈。
+// 定位读（pread / OVERLAPPED.Offset 同步用法）天然支持 Range 与多线程复用同一句柄。
+#ifdef _WIN32
+using native_handle = HANDLE;
+inline constexpr native_handle k_bad_handle = INVALID_HANDLE_VALUE;
+#else
+using native_handle = int;
+inline constexpr native_handle k_bad_handle = -1;
+#endif
+
+class native_file {
+public:
+    native_file() noexcept = default;
+    explicit native_file(const std::string& path) noexcept { (void)open(path); }
+    ~native_file() { close(); }
+
+    native_file(const native_file&) = delete;
+    native_file& operator=(const native_file&) = delete;
+    native_file(native_file&& o) noexcept : h_(o.h_) { o.h_ = k_bad_handle; }
+    native_file& operator=(native_file&& o) noexcept {
+        if (this != &o) { close(); h_ = o.h_; o.h_ = k_bad_handle; }
+        return *this;
+    }
+
+    [[nodiscard]] bool open(const std::string& path) noexcept {
+        close();
+#ifdef _WIN32
+        // 路径同样要 UTF-8 -> UTF-16（见本文件开头说明的坑）
+        h_ = ::CreateFileW(utf8_to_wide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        return h_ != k_bad_handle;
+#else
+        h_ = ::open(path.c_str(), O_RDONLY);
+        return h_ >= 0;
+#endif
+    }
+
+    [[nodiscard]] bool is_open() const noexcept { return h_ != k_bad_handle; }
+
+    void close() noexcept {
+        if (h_ == k_bad_handle) { return; }
+#ifdef _WIN32
+        ::CloseHandle(h_);
+#else
+        ::close(h_);
+#endif
+        h_ = k_bad_handle;
+    }
+
+    // 从 offset 处读最多 n 字节；返回实际读到的字节数（0 表示 EOF 或出错）
+    [[nodiscard]] std::size_t read_at(std::uint64_t offset, void* dst, std::size_t n) noexcept {
+        if (h_ == k_bad_handle || n == 0) { return 0; }
+#ifdef _WIN32
+        // 同步句柄 + OVERLAPPED 的 Offset 字段 = 定位读，不移动文件指针
+        OVERLAPPED ov{};
+        ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFull);
+        ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        DWORD got = 0;
+        if (::ReadFile(h_, dst, static_cast<DWORD>(n), &got, &ov) == 0) { return 0; }
+        return static_cast<std::size_t>(got);
+#else
+        const ssize_t got = ::pread(h_, dst, n, static_cast<off_t>(offset));
+        return got > 0 ? static_cast<std::size_t>(got) : 0;
+#endif
+    }
+
+private:
+    native_handle h_ = k_bad_handle;
+};
 
 }  // namespace mfweb::http

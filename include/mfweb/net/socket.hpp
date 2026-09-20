@@ -54,6 +54,28 @@ inline bool set_reuse_address(io::native_socket s) noexcept {
 #endif
 }
 
+// 放大套接字发送/接收缓冲区。
+//
+// **为什么必须做**：一次 async_write 最多只能把发送缓冲区填满，之后要等完成事件才能再写。
+// 于是单连接的吞吐 ≈ 缓冲区大小 ÷ 每次异步操作的往返延迟。
+// 实测 Windows 默认发送缓冲区 64 KiB、每次异步操作约 70 µs：
+//     64 KiB ÷ 70 µs ≈ 0.94 GB/s
+// 而框架传 2 GiB 实测正好是 **0.94 GB/s** —— 完全吻合，说明瓶颈就在这里。
+// 对照组：裸 TCP 用 4 MiB 缓冲区可跑到 3.67 GB/s。
+//
+// 注意这是在**每条连接**上设置，会影响内存占用（N 连接 × 缓冲区），
+// 所以只在确认要传大文件的服务端连接上开，不当成全局默认。
+inline bool set_socket_buffers(io::native_socket s, int bytes) noexcept {
+#ifdef _WIN32
+    const char* p = reinterpret_cast<const char*>(&bytes);
+#else
+    const void* p = &bytes;
+#endif
+    const bool a = ::setsockopt(s, SOL_SOCKET, SO_SNDBUF, p, sizeof(bytes)) == 0;
+    const bool b = ::setsockopt(s, SOL_SOCKET, SO_RCVBUF, p, sizeof(bytes)) == 0;
+    return a && b;
+}
+
 inline bool set_no_delay(io::native_socket s) noexcept {
 #ifdef _WIN32
     BOOL yes = TRUE;

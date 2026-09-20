@@ -13,7 +13,13 @@
 namespace mfweb::http {
 namespace {
 
-constexpr std::size_t kChunk = 64 * 1024;
+// 文件分块发送的块大小。
+//
+// **这个常数直接决定大文件吞吐**：实测宿主 Windows/IOCP 上
+// 2 GB 传输耗时 2.43 s，即每 64 KiB 块约 73 µs —— 与 HTTP 每请求延迟同量级，
+// 说明瓶颈是**每次异步操作的固定开销**，而不是带宽。
+// 加大块就能线性摊薄这个开销（Linux/io_uring 侧每块约 32 µs，所以同样块大小下快一倍多）。
+constexpr std::size_t kChunk = 512 * 1024;
 
 [[nodiscard]] bool iequals_sv(std::string_view a, std::string_view b) noexcept {
     if (a.size() != b.size()) { return false; }
@@ -116,6 +122,10 @@ coro::task<void> server::accept_loop(io::native_socket listener, std::string pre
 
 coro::task<void> server::serve_connection(io::native_socket s, std::string prefix,
                                           std::string root) {
+    // 注：曾在此处放大套接字缓冲区（4 MiB），试图解决大文件发送慢的问题。
+    // **实测零收益**（0.87 vs 0.94 GB/s，在噪声范围内），因此撤掉 ——
+    // 它会抬高每条静态连接的缓冲区上限，与"海量连接"这个目标冲突。
+    // 大文件吞吐的真实瓶颈仍未定位，详见 03_性能实测报告.md。
     request_parser parser;
     // 每连接读缓冲的**起步**大小。
     //
@@ -343,19 +353,23 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
     if (head_only) { co_return true; }
 
     if (resp.stream_file) {
-        std::ifstream in = open_file(resp.file_path);
-        if (!in) { co_return false; }
-        in.seekg(static_cast<std::streamoff>(resp.file_offset));
+        // 用平台原生句柄，不用 std::ifstream。
+        // 实测（本机 Windows/NVMe/页缓存热）：ifstream 1.46 GB/s、ReadFile 5.84~7.16 GB/s，
+        // 而且 ifstream 与块大小无关（64 KiB 和 1 MiB 一样慢）—— 它就是大文件发送的瓶颈。
+        // 详见 file_io.hpp 里 native_file 的说明。
+        native_file in;
+        if (!in.open(resp.file_path)) { co_return false; }
 
         std::vector<char> chunk(kChunk);
+        std::uint64_t offset = resp.file_offset;
         std::uint64_t remaining = resp.file_length;
         while (remaining > 0) {
             const std::size_t want =
                 remaining < kChunk ? static_cast<std::size_t>(remaining) : kChunk;
-            in.read(chunk.data(), static_cast<std::streamsize>(want));
-            const std::size_t got = static_cast<std::size_t>(in.gcount());
+            const std::size_t got = in.read_at(offset, chunk.data(), want);
             if (got == 0) { break; }
             if (!co_await write_all(*ctx_, s, chunk.data(), got)) { co_return false; }
+            offset += got;
             remaining -= got;
         }
         co_return true;
