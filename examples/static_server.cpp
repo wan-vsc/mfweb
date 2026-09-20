@@ -54,7 +54,16 @@ int main() {
     LocalFree(wargv);
 #endif
 
-    mfweb::runtime::io_context ctx;
+    const std::size_t threads =
+        (argc > 3) ? static_cast<std::size_t>(std::atoi(
+#ifdef _WIN32
+                         mfweb::http::wide_to_utf8(wargv[3]).c_str()
+#else
+                         wargv[3]
+#endif
+                         ))
+                   : 1;
+    mfweb::runtime::io_context ctx{threads};
     if (!ctx.valid()) {
         std::printf("io_context 初始化失败\n");
         return 2;

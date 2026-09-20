@@ -117,7 +117,7 @@ coro::task<void> load_worker(runtime::io_context& ctx, std::uint16_t port, std::
 
 void print_usage() {
     std::printf("用法:\n");
-    std::printf("  mfbench http-server <port> [body_bytes]\n");
+    std::printf("  mfbench http-server <port> [body_bytes] [threads]\n");
     std::printf("  mfbench http-load   <port> <conns> <seconds>\n");
 }
 
@@ -130,8 +130,9 @@ int run_http_server(int argc, char** argv) {
     }
     const auto port = static_cast<std::uint16_t>(parse_arg(argv[1], 19090));
     const auto body_bytes = static_cast<std::size_t>(parse_arg(argc > 2 ? argv[2] : nullptr, 128));
+    const auto threads = static_cast<std::size_t>(parse_arg(argc > 3 ? argv[3] : nullptr, 1));
 
-    runtime::io_context ctx;
+    runtime::io_context ctx{threads};
     if (!ctx.valid()) {
         std::printf("io_context 初始化失败\n");
         return 2;
@@ -154,8 +155,8 @@ int run_http_server(int argc, char** argv) {
         std::printf("监听 %u 失败\n", port);
         return 2;
     }
-    std::printf("mfweb 压测服务端已启动：http://127.0.0.1:%u/hello（%zu 字节响应）\n", port,
-                body_bytes);
+    std::printf("mfweb 压测服务端已启动：http://127.0.0.1:%u/hello（%zu 字节响应，%zu 个事件循环线程）\n",
+                port, body_bytes, ctx.thread_count());
     std::fflush(stdout);
     srv.run();
     return 0;

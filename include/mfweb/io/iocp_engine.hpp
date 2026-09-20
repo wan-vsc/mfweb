@@ -2,8 +2,12 @@
 
 // mfweb::io::iocp_engine —— Windows IOCP 后端。
 //
-// 线程模型：**非线程安全**，只应由所属事件循环线程调用。
-// 唯一例外是 wakeup()，它用 PostQueuedCompletionStatus 把阻塞在 harvest() 的线程叫醒。
+// 线程模型（多线程事件循环下）：
+//   * **harvest() 可从多个 worker 线程并发调用** —— 这正是 IOCP 的设计意图：
+//     内核负责把完成包分给最先来取的线程，我们不需要自己做 work-stealing。
+//   * 提交操作（post_*）与 cancel() 由持有该操作对象的协程调用；同一个操作不会被
+//     两个线程同时提交（协程一次只在一个线程上跑）。
+//   * wakeup() 线程安全，用 PostQueuedCompletionStatus 叫醒阻塞在 harvest 的线程。
 //
 // 完成通知为什么用单发 GetQueuedCompletionStatus 而不是 Ex 批量版：
 // 批量版（GetQueuedCompletionStatusEx）在条目里**不直接给出每个操作的错误码**，
@@ -13,6 +17,7 @@
 
 #include <mfweb/io/io_engine.hpp>
 
+#include <atomic>
 #include <cstddef>
 
 namespace mfweb::io {
@@ -26,7 +31,9 @@ public:
     iocp_engine& operator=(const iocp_engine&) = delete;
 
     [[nodiscard]] bool valid() const noexcept { return port_ != nullptr; }
-    [[nodiscard]] int last_error() const noexcept { return last_error_; }
+    [[nodiscard]] int last_error() const noexcept {
+        return last_error_.load(std::memory_order_relaxed);
+    }
 
     // 创建带 WSA_FLAG_OVERLAPPED 的套接字（IOCP 下必须）
     [[nodiscard]] static native_socket make_socket(int af = AF_INET) noexcept;
@@ -64,7 +71,7 @@ private:
     HANDLE port_ = nullptr;
     LPFN_ACCEPTEX accept_ex_ = nullptr;
     LPFN_CONNECTEX connect_ex_ = nullptr;
-    int last_error_ = 0;
+    std::atomic<int> last_error_{0};  // 多线程下可能被多个 worker 同时写
 };
 
 }  // namespace mfweb::io
