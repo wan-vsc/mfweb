@@ -5,6 +5,8 @@
 #include <mfweb/net/http/static_file.hpp>
 
 #include <cctype>
+#include <charconv>
+#include <ctime>
 #include <fstream>
 #include <vector>
 
@@ -224,17 +226,42 @@ response server::handle_request(const request& req, const std::string& prefix,
 
 coro::task<bool> server::write_response(io::native_socket s, const response& resp,
                                         bool head_only) {
+    // 直接往 head 里追加，不再用 to_string/now_http_date 造临时 string。
+    // 热路径上每个响应原先要产生 5~6 次临时字符串构造，这里全部消掉。
+    // 注意：head 必须是**局部变量** —— async_write 的 WSABUF 直接指向它的内存，
+    // 挂起期间必须保持有效；改成共享缓冲会与同线程的其他连接互相覆盖。
+    char numbuf[16]{};
+    char datebuf[48]{};
+
     std::string head;
-    head.reserve(512);
-    head += "HTTP/1.1 " + std::to_string(resp.status) + " ";
+    head.reserve(384);
+    head += "HTTP/1.1 ";
+    {
+        const auto [end, ec] = std::to_chars(numbuf, numbuf + sizeof(numbuf), resp.status);
+        head.append(numbuf, static_cast<std::size_t>(end - numbuf));
+    }
+    head += ' ';
     head += status_text(resp.status);
-    head += "\r\n";
-    head += "Server: ";
+    head += "\r\nServer: ";
     head += kServerName;
+    head += "\r\nDate: ";
+    {
+        std::tm tm{};
+        const std::time_t now = std::time(nullptr);
+#ifdef _WIN32
+        gmtime_s(&tm, &now);
+#else
+        gmtime_r(&now, &tm);
+#endif
+        std::strftime(datebuf, sizeof(datebuf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+        head += datebuf;
+    }
     head += "\r\n";
-    head += "Date: " + now_http_date() + "\r\n";
     for (const auto& [k, v] : resp.headers) {
-        head += k + ": " + v + "\r\n";
+        head += k;
+        head += ": ";
+        head += v;
+        head += "\r\n";
     }
     if (resp.status == 101) {
         head += "Connection: Upgrade\r\n\r\n";  // WebSocket 升级响应
@@ -266,6 +293,11 @@ coro::task<bool> server::write_response(io::native_socket s, const response& res
         co_return true;
     }
 
+    if (!resp.body_view.empty()) {  // 非拥有 body：零拷贝发送
+        const auto wb =
+            co_await coro::async_write(*ctx_, s, resp.body_view.data(), resp.body_view.size());
+        co_return wb.ok();
+    }
     if (!resp.body.empty()) {
         const auto wb = co_await coro::async_write(*ctx_, s, resp.body.data(), resp.body.size());
         co_return wb.ok();

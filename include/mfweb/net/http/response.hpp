@@ -19,7 +19,12 @@ struct response {
     int status = 200;
     std::vector<std::pair<std::string, std::string>> headers;
 
-    std::string body;                      // 内存 body
+    // 内存 body 有两种携带方式，避免热路径上的拷贝：
+    //   * body_view：非拥有（指向静态字符串/常量），**优先使用**，零分配零拷贝；
+    //   * body     ：拥有（动态拼装出来的内容）。
+    std::string_view body_view;
+    std::string body;
+
     std::string file_path;                 // 流式文件 body
     std::uint64_t file_offset = 0;
     std::uint64_t file_length = 0;

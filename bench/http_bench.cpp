@@ -140,15 +140,17 @@ int run_http_server(int argc, char** argv) {
 
     const std::string payload(body_bytes, 'x');
     http::server srv{ctx};
-    srv.routes().get("/hello", [payload](const http::request&, router::route_params&,
-                                         http::response& r) {
+    // 用非拥有 body：不再每请求复制 128 字节
+    srv.routes().get("/hello", [&payload](const http::request&, router::route_params&,
+                                          http::response& r) {
         r.status = 200;
         r.set("Content-Type", "text/plain");
-        r.body = payload;
+        r.body_view = payload;
     });
-    srv.routes().get("/", [payload](const http::request&, router::route_params&, http::response& r) {
+    srv.routes().get("/", [&payload](const http::request&, router::route_params&,
+                                     http::response& r) {
         r.status = 200;
-        r.body = payload;
+        r.body_view = payload;
     });
 
     if (!srv.listen(port)) {

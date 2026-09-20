@@ -56,7 +56,10 @@ public:
     }
 
 private:
-    std::vector<std::pair<std::string_view, std::string_view>> items_;
+    // 用 small_vector 而非 std::vector：路由参数每请求都要构造一次。
+    // 内联容量取 4（而不是 8）：这个对象每请求构造一次，内联缓冲越大，
+    // 构造成本越高；典型路由参数不超过 4 个，够了。
+    util::small_vector<std::pair<std::string_view, std::string_view>, 4> items_;
 };
 
 enum class match_result { found, not_found, method_not_allowed };
