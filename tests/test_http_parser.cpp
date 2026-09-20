@@ -3,6 +3,7 @@
 #include <mfweb/net/http/parser.hpp>
 #include <mfweb/test/test.hpp>
 
+#include <cstring>
 #include <string>
 
 namespace {
@@ -65,10 +66,69 @@ MFW_TEST(http_parser, http10_keepalive_header) {
     MFW_CHECK(req.keep_alive);
 }
 
-MFW_TEST(http_parser, chunked_transfer_encoding_detected) {
+MFW_TEST(http_parser, chunked_body_is_decoded) {
     mfweb::http::request_parser parser;
-    const auto req = parse_one("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", parser);
+    const auto req = parse_one(
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        parser);
     MFW_CHECK(req.chunked);
+    MFW_CHECK_EQ(req.body, std::string_view("hello"));
+}
+
+MFW_TEST(http_parser, chunked_multiple_chunks) {
+    mfweb::http::request_parser parser;
+    const auto req = parse_one(
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "3\r\nabc\r\n5\r\ndefgh\r\n0\r\n\r\n",
+        parser);
+    MFW_CHECK_EQ(req.body, std::string_view("abcdefgh"));
+}
+
+MFW_TEST(http_parser, chunked_ignores_extensions_and_trailers) {
+    mfweb::http::request_parser parser;
+    const auto req = parse_one(
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "5;ext=1\r\nhello\r\n0\r\nX-Trailer: v\r\n\r\n",
+        parser);
+    MFW_CHECK_EQ(req.body, std::string_view("hello"));
+}
+
+MFW_TEST(http_parser, chunked_incremental_feed) {
+    // 分 6 次喂入，验证跨 feed 的状态机正确
+    mfweb::http::request_parser parser;
+    const std::string whole =
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+    mfweb::http::request req;
+    mfweb::http::request_parser::result last = mfweb::http::request_parser::result::need_more;
+    std::size_t i = 0;
+    while (i < whole.size()) {
+        const std::size_t step = (i + 7 < whole.size()) ? 7 : whole.size() - i;
+        std::size_t consumed = 0;
+        last = parser.feed(whole.data() + i, step, req, consumed);
+        i += step;
+        if (last == mfweb::http::request_parser::result::complete) { break; }
+    }
+    MFW_CHECK_EQ(last, mfweb::http::request_parser::result::complete);
+    MFW_CHECK_EQ(req.body, std::string_view("hello"));
+}
+
+MFW_TEST(http_parser, chunked_rejects_invalid_size) {
+    mfweb::http::request_parser parser;
+    mfweb::http::request req;
+    std::size_t consumed = 0;
+    const char* raw = "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n";
+    const auto r = parser.feed(raw, std::strlen(raw), req, consumed);
+    MFW_CHECK_EQ(r, mfweb::http::request_parser::result::error);
+}
+
+MFW_TEST(http_parser, chunked_waits_for_complete_body) {
+    // 只给了头，chunk 数据还没来 → 必须 need_more 而不是 complete
+    mfweb::http::request_parser parser;
+    mfweb::http::request req;
+    std::size_t consumed = 0;
+    const char* raw = "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe";
+    const auto r = parser.feed(raw, std::strlen(raw), req, consumed);
+    MFW_CHECK_EQ(r, mfweb::http::request_parser::result::need_more);
 }
 
 MFW_TEST(http_parser, header_value_trimmed) {

@@ -6,6 +6,8 @@
 
 #include <mfweb/coro/io_await.hpp>
 #include <mfweb/net/http/server.hpp>
+#include <mfweb/router/router.hpp>
+#include <mfweb/router/router.hpp>
 #include <mfweb/net/socket.hpp>
 #include <mfweb/runtime/io_context.hpp>
 #include <mfweb/test/test.hpp>
@@ -159,3 +161,41 @@ MFW_TEST(http_server, rejects_directory_traversal) {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+MFW_TEST(http_server, dynamic_route_with_chunked_body) {
+    // 动态路由 + chunked 请求体：POST /api/echo/{name}
+    mfweb::runtime::io_context ctx;
+    MFW_CHECK(ctx.valid());
+
+    mfweb::http::server srv{ctx};
+    srv.routes().post("/api/echo/{name}",
+                      [](const mfweb::http::request& req, mfweb::router::route_params& p,
+                         mfweb::http::response& r) {
+                          r.status = 200;
+                          r.body = std::string(p.get("name")) + ":" + std::string(req.body);
+                      });
+    MFW_CHECK_MSG(srv.listen(18997), "监听失败");
+
+    const std::string resp = raw_http(ctx, 18997,
+        "POST /api/echo/abc HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n"
+        "Connection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+
+    MFW_CHECK_MSG(resp.rfind("HTTP/1.1 200", 0) == 0, "动态路由应返回 200");
+    MFW_CHECK_EQ(body_of(resp), std::string_view("abc:hello"));
+}
+
+MFW_TEST(http_server, dynamic_route_method_not_allowed) {
+    mfweb::runtime::io_context ctx;
+    mfweb::http::server srv{ctx};
+    srv.routes().get("/only-get",
+                     [](const mfweb::http::request&, mfweb::router::route_params&,
+                        mfweb::http::response& r) { r.body = "g"; });
+    MFW_CHECK(srv.listen(18998));
+
+    const std::string resp = raw_http(ctx, 18998,
+        "POST /only-get HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\n"
+        "Connection: close\r\n\r\n");
+    MFW_CHECK_MSG(resp.rfind("HTTP/1.1 405", 0) == 0, "方法不匹配应返回 405");
+    MFW_CHECK_EQ(header_of(resp, "Allow"), std::string_view("GET, HEAD, POST, PUT, DELETE"));
+}
+

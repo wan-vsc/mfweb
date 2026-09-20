@@ -16,6 +16,7 @@
 #include <mfweb/net/http/response.hpp>
 #include <mfweb/net/socket.hpp>
 #include <mfweb/net/websocket/session.hpp>
+#include <mfweb/router/router.hpp>
 #include <mfweb/runtime/io_context.hpp>
 
 #include <cstdint>
@@ -40,6 +41,10 @@ public:
     // 注册 WebSocket 端点（路径精确匹配）。握手完成后回调 handler 设置 on_message。
     void ws(std::string path, net::websocket::ws_handler handler);
 
+    // 动态路由表（段级 trie；支持 {param} 与 {path...}）。命中优先于静态文件。
+    [[nodiscard]] router::router& routes() noexcept { return routes_; }
+    [[nodiscard]] const router::router& routes() const noexcept { return routes_; }
+
     // 驱动事件循环直到 stop()
     void run();
 
@@ -60,6 +65,7 @@ private:
     std::string static_root_;
     std::string ws_path_;
     net::websocket::ws_handler ws_handler_;
+    router::router routes_;
 };
 
 }  // namespace mfweb::http

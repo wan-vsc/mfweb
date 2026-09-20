@@ -38,11 +38,22 @@ private:
     bool parse_head(request& out);
     static bool parse_header_line(std::string_view line, header_view& out);
 
-    std::string head_;    // 请求行 + 头部，到空行为止
-    std::string body_;    // Content-Length 请求体
+    // 请求体的两种编码
+    enum class body_mode : std::uint8_t { none, length, chunked };
+    // chunked 解码状态机：size → data → data_crlf →（循环）→ trailer
+    enum class chunk_state : std::uint8_t { size, data, data_crlf, trailer, done };
+
+    result feed_chunked(request& out);
+
+    std::string head_;       // 请求行 + 头部，到空行为止
+    std::string body_;       // 解码后的请求体
+    std::string chunk_raw_;  // chunked 原始字节（未解码）
     std::size_t max_head_;
     std::size_t max_body_;
     std::size_t content_length_ = 0;
+    std::size_t chunk_remaining_ = 0;
+    body_mode mode_ = body_mode::none;
+    chunk_state chunk_state_ = chunk_state::size;
     bool head_done_ = false;
     std::string_view error_{"ok"};
 };

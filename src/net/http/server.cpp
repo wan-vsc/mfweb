@@ -142,6 +142,36 @@ coro::task<void> server::serve_connection(io::native_socket s, std::string prefi
             }
 
             const bool head_only = (req.method_ == method::head);
+
+            // 动态路由优先于静态文件
+            {
+                router::route_params params;
+                const router::handler* matched = nullptr;
+                const auto mr = routes_.match(req.method_, req.target, params, matched);
+                if (mr == router::match_result::found) {
+                    response dyn;
+                    (*matched)(req, params, dyn);
+                    const bool ok = co_await write_response(s, dyn, head_only);
+                    if (!ok || !req.keep_alive) {
+                        keep_going = false;
+                        break;
+                    }
+                    parser.reset();
+                    continue;
+                }
+                if (mr == router::match_result::method_not_allowed) {
+                    response m405 = make_error_response(405);
+                    m405.set("Allow", "GET, HEAD, POST, PUT, DELETE");
+                    const bool ok = co_await write_response(s, m405, head_only);
+                    if (!ok || !req.keep_alive) {
+                        keep_going = false;
+                        break;
+                    }
+                    parser.reset();
+                    continue;
+                }
+            }
+
             const response resp = handle_request(req, prefix, root);
             const bool ok = co_await write_response(s, resp, head_only);
             if (!ok || !req.keep_alive) {

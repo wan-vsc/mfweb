@@ -31,7 +31,11 @@ request_parser::request_parser(std::size_t max_head, std::size_t max_body) noexc
 void request_parser::reset() noexcept {
     head_.clear();
     body_.clear();
+    chunk_raw_.clear();
     content_length_ = 0;
+    chunk_remaining_ = 0;
+    mode_ = body_mode::none;
+    chunk_state_ = chunk_state::size;
     head_done_ = false;
     error_ = "ok";
 }
@@ -61,22 +65,37 @@ request_parser::result request_parser::feed(const char* data, std::size_t len, r
 
         if (!parse_head(out)) { return result::error; }
 
-        if (content_length_ == 0) {
+        if (out.chunked) {
+            mode_ = body_mode::chunked;
+        } else if (content_length_ > 0) {
+            mode_ = body_mode::length;
+        } else {
             // 无 body：请求完整。若空行后还粘着下一请求的字节（pipelining），
             // 只消费头部部分，把多余字节留给调用方。
             consumed = leftover > 0 ? head_bytes : head_.size();
+            out.body = {};
             return result::complete;
         }
 
-        // 有 body：把空行后已随头部一起读入的字节挪进 body 缓冲
+        // 把空行后已随头部一起读入的字节挪进对应缓冲
         if (leftover > 0) {
-            body_.append(head_.data() + head_bytes, leftover);
+            if (mode_ == body_mode::chunked) {
+                chunk_raw_.append(head_.data() + head_bytes, leftover);
+            } else {
+                body_.append(head_.data() + head_bytes, leftover);
+            }
         }
         consumed = head_.size();
     } else {
-        body_.append(data, len);
+        if (mode_ == body_mode::chunked) {
+            chunk_raw_.append(data, len);
+        } else {
+            body_.append(data, len);
+        }
         consumed = len;
     }
+
+    if (mode_ == body_mode::chunked) { return feed_chunked(out); }
 
     if (body_.size() > max_body_) {
         error_ = "body too large";
@@ -87,6 +106,112 @@ request_parser::result request_parser::feed(const char* data, std::size_t len, r
         return result::complete;
     }
     return result::need_more;
+}
+
+// chunked 解码（RFC 7230 §4.1）：
+//     chunk = chunk-size [;ext] CRLF chunk-data CRLF
+//     结束 = "0" CRLF [trailer-part] CRLF
+// trailer 字段一律忽略（本项目不用它们）。
+request_parser::result request_parser::feed_chunked(request& out) {
+    for (;;) {
+        switch (chunk_state_) {
+            case chunk_state::size: {
+                const std::size_t nl = chunk_raw_.find("\r\n");
+                if (nl == std::string::npos) {
+                    if (chunk_raw_.size() > 4096) {
+                        error_ = "chunk-size line too long";
+                        return result::error;
+                    }
+                    return result::need_more;
+                }
+                std::size_t digits = 0;
+                while (digits < nl && chunk_raw_[digits] != ';') { ++digits; }
+                if (digits == 0) {
+                    error_ = "empty chunk size";
+                    return result::error;
+                }
+                std::size_t value = 0;
+                for (std::size_t i = 0; i < digits; ++i) {
+                    const char ch = chunk_raw_[i];
+                    int digit = -1;
+                    if (ch >= '0' && ch <= '9') { digit = ch - '0'; }
+                    else if (ch >= 'a' && ch <= 'f') { digit = ch - 'a' + 10; }
+                    else if (ch >= 'A' && ch <= 'F') { digit = ch - 'A' + 10; }
+                    if (digit < 0) {
+                        error_ = "invalid chunk size";
+                        return result::error;
+                    }
+                    value = value * 16 + static_cast<std::size_t>(digit);
+                    if (value > max_body_) {
+                        error_ = "chunk too large";
+                        return result::error;
+                    }
+                }
+                chunk_raw_.erase(0, nl + 2);
+                if (value == 0) {
+                    chunk_state_ = chunk_state::trailer;
+                } else {
+                    chunk_remaining_ = value;
+                    chunk_state_ = chunk_state::data;
+                }
+                break;
+            }
+
+            case chunk_state::data: {
+                if (chunk_raw_.empty()) { return result::need_more; }
+                const std::size_t take = chunk_raw_.size() < chunk_remaining_
+                                             ? chunk_raw_.size()
+                                             : chunk_remaining_;
+                body_.append(chunk_raw_.data(), take);
+                chunk_raw_.erase(0, take);
+                chunk_remaining_ -= take;
+                if (body_.size() > max_body_) {
+                    error_ = "body too large";
+                    return result::error;
+                }
+                if (chunk_remaining_ == 0) {
+                    chunk_state_ = chunk_state::data_crlf;
+                } else {
+                    return result::need_more;
+                }
+                break;
+            }
+
+            case chunk_state::data_crlf: {
+                if (chunk_raw_.size() < 2) { return result::need_more; }
+                if (chunk_raw_[0] != '\r' || chunk_raw_[1] != '\n') {
+                    error_ = "missing CRLF after chunk data";
+                    return result::error;
+                }
+                chunk_raw_.erase(0, 2);
+                chunk_state_ = chunk_state::size;
+                break;
+            }
+
+            case chunk_state::trailer: {
+                const std::size_t nl = chunk_raw_.find("\r\n");
+                if (nl == std::string::npos) {
+                    if (chunk_raw_.size() > 8192) {
+                        error_ = "trailer too long";
+                        return result::error;
+                    }
+                    return result::need_more;
+                }
+                if (nl == 0) {
+                    chunk_raw_.erase(0, 2);
+                    chunk_state_ = chunk_state::done;
+                    out.body = std::string_view(body_);
+                    return result::complete;
+                }
+                chunk_raw_.erase(0, nl + 2);  // 忽略 trailer 字段
+                break;
+            }
+
+            case chunk_state::done:
+                out.body = std::string_view(body_);
+                return result::complete;
+        }
+    }
 }
 
 bool request_parser::parse_head(request& out) {
