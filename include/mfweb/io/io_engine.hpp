@@ -16,6 +16,14 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+// **必须定义 NOMINMAX**：否则 <windows.h> 会把 min/max 定义成宏，
+// 破坏本库（以及任何使用者代码）里的 std::max / numeric_limits<T>::max() / time_point::max()。
+// 项目自身的 CMake 构建在 cmake/CompilerOptions.cmake 里定义了它，
+// 但**把 mfweb 作为库引入自己工程的使用者不会** —— 所以在头文件里兜住。
+// 这个疏漏是照 README 的快速上手示例、用裸 cl 命令编译时暴露的。
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mswsock.h>  // AcceptEx/ConnectEx 及其函数指针类型、SO_UPDATE_*_CONTEXT
