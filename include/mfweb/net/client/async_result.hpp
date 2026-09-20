@@ -69,7 +69,15 @@ public:
                 next.set_error(upstream.error());  // 错误沿链传播
                 return;
             }
-            next.set_value(f(upstream.value()));
+            // **必须区分 void**：续接函数返回 void 时 async_result<void> 只有无参 set_value()。
+            // 这个缺陷是接上真实 Qt 后写"最后一步把结果投递回 Qt 线程"才发现 ——
+            // 那一跳天然不需要返回值，而此前所有示例的 then 都返回值，所以从没暴露。
+            if constexpr (std::is_void_v<U>) {
+                f(upstream.value());
+                next.set_value();
+            } else {
+                next.set_value(f(upstream.value()));
+            }
         });
         return next;
     }
@@ -147,7 +155,13 @@ public:
                 next.set_error(upstream.error());
                 return;
             }
-            next.set_value(f());
+            // 同上：void 续接走无参 set_value()
+            if constexpr (std::is_void_v<U>) {
+                f();
+                next.set_value();
+            } else {
+                next.set_value(f());
+            }
         });
         return next;
     }

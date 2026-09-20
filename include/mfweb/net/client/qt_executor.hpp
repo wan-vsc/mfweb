@@ -9,8 +9,10 @@
 // 把任意可调用对象用 Qt::QueuedConnection 投递到目标 QObject 所属线程。
 // then 链里在需要碰界面的那一步调用它即可。
 //
-// ⚠️ 本机未安装 Qt，**该头文件尚未在真实 Qt 环境下编译验证**（已如实记录在交付说明）。
-//    它靠 __has_include 门控：没装 Qt 的机器上包含它不会报错，只是不提供任何东西。
+// ✅ **已在真实 Qt 6.8.3 (MSVC2022 x64) 下编译并运行验证**（examples/qt_then_chain.cpp）。
+//    验证内容不只是"能编译"，还包括用 QThread::currentThread() == qApp->thread()
+//    断言回调确实被投递回了 Qt 主线程。
+//    它同时用 __has_include 门控：没装 Qt 的机器上包含它不会报错，只是不提供任何东西。
 
 #if defined(__has_include)
 #if __has_include(<QCoreApplication>) && __has_include(<QMetaObject>)
@@ -23,6 +25,10 @@
 #include <QCoreApplication>
 #include <QMetaObject>
 #include <QObject>
+// 必须显式包含：on_qt_main_thread() 用了 QThread::currentThread()。
+// 这个疏漏是**接上真实 Qt 才暴露的** —— 没有 Qt 的机器上 __has_include 直接跳过整个头，
+// 桩测试也覆盖不到，所以"看起来没问题"了很久。
+#include <QThread>
 
 #include <functional>
 #include <type_traits>
