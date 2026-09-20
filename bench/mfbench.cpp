@@ -15,6 +15,8 @@ namespace mfweb::bench {
 int run_coro(int argc, char** argv);
 int run_timer(int argc, char** argv);
 int run_router(int argc, char** argv);
+int run_http_server(int argc, char** argv);
+int run_http_load(int argc, char** argv);
 }  // namespace mfweb::bench
 
 namespace {
@@ -36,6 +38,8 @@ void print_usage() {
     std::printf("      cancel-index  : 朴素做法，额外维护 id→节点 哈希索引，先查表再删除\n");
     std::printf("  router [routes] [lookups]      路由匹配基准\n");
     std::printf("      同一棵树对照显式栈（iterative）与递归下降（recursive）\n");
+    std::printf("  http-server <port> [body_bytes]   压测用服务端（固定响应）\n");
+    std::printf("  http-load <port> <conns> <secs>   压测客户端（顺序请求-响应，keep-alive）\n");
 }
 
 }  // namespace
@@ -54,6 +58,8 @@ int main(int argc, char** argv) {
     if (command == "coro") { return mfweb::bench::run_coro(argc - 1, argv + 1); }
     if (command == "timer") { return mfweb::bench::run_timer(argc - 1, argv + 1); }
     if (command == "router") { return mfweb::bench::run_router(argc - 1, argv + 1); }
+    if (command == "http-server") { return mfweb::bench::run_http_server(argc - 1, argv + 1); }
+    if (command == "http-load") { return mfweb::bench::run_http_load(argc - 1, argv + 1); }
 
     std::printf("未知基准: %.*s\n\n", static_cast<int>(command.size()), command.data());
     print_usage();

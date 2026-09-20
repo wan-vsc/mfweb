@@ -4,6 +4,7 @@ add_executable(mfbench
     coro_bench.cpp
     timer_bench.cpp
     router_bench.cpp
+    http_bench.cpp
 )
 
 target_link_libraries(mfbench PRIVATE mfweb::mfweb)
